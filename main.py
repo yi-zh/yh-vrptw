@@ -10,7 +10,7 @@ This script:
 4. Supports multiple solving algorithms
 5. Outputs results to csv_data/output/result.csv
 """
-
+import colorlog
 import pandas as pd
 import numpy as np
 import os
@@ -23,8 +23,23 @@ import logging
 import math
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# 创建日志格式化器，定义不同级别日志的颜色
+formatter = colorlog.ColoredFormatter(
+    "%(log_color)s%(asctime)s - %(levelname)s - %(message)s",
+    log_colors={
+        'DEBUG': 'white',
+        'INFO': 'white',       # INFO级别设置为白色
+        'WARNING': 'yellow',
+        'ERROR': 'red',        # ERROR级别设置为红色
+        'CRITICAL': 'bold_red',
+    }
+)
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)  # 设置日志级别
 
 @dataclass
 class Customer:
