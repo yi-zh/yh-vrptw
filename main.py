@@ -239,7 +239,7 @@ class DataManager:
                     
                     # Create multiple vehicles of this type based on available count
                     # For the POC, we'll create a reasonable number (max 5 per type)
-                    vehicles_to_create = min(available_count, 5)
+                    vehicles_to_create = available_count
                     
                     for i in range(vehicles_to_create):
                         vehicle = Vehicle(
@@ -274,8 +274,9 @@ class DataManager:
             if cost_file.exists():
                 df = pd.read_csv(cost_file, encoding='utf-8-sig')
                 logger.info("Loaded vehicle cost data")
+                df.rename(columns={"基础运费": "vehicle_type"}, inplace=True)
                 # Store cost data for future use in optimization
-                self.vehicle_costs = df.to_dict('records')
+                self.vehicle_costs = df.set_index("vehicle_type").to_dict('index')
             else:
                 logger.info("Vehicle cost file not found, using default costs")
         except Exception as e:
