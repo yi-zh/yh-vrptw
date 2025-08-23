@@ -16,7 +16,7 @@ import numpy as np
 import os
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import json
 import logging
@@ -39,6 +39,23 @@ class Customer:
     demand: Dict[str, float]  # product_id -> quantity
     sales_order: str = ""  # Actual sales order ID from CSV
     priority: int = 1
+    product_count: int = 0  # Number of different products
+    total_quantity: float = 0.0  # Total quantity across all products
+    
+    # Extended customer information
+    main_customer_code: str = ""  # 主客户编码
+    main_customer_name: str = ""  # 主客户名称
+    sub_customer_code: str = ""   # 子客户编码
+    sub_customer_name: str = ""   # 子客户名称
+    orders: List[str] = field(default_factory=list)  # Multiple order IDs for this customer
+    
+    # Special fulfillment rules
+    delivery_method: str = ""     # 交接方式 (称重点数/信任交接)
+    height_restricted: bool = False  # 是否限高
+    vehicle_restriction: str = ""    # 限制车型名称
+    extra_work_hours: float = 0.0    # 额外工作时长（小时）
+    requires_porter: bool = False    # 是否需要搬运工
+    delivery_type: str = "正常"      # 配送类型
 
 @dataclass
 class Vehicle:
@@ -105,7 +122,7 @@ class DataManager:
         except Exception as e:
             logger.error(f"Error loading data: {e}")
             return False
-    
+
     def _load_customers(self):
         """Load customer data from CSV"""
         # Load from 需排线销售订单.csv (main customer orders)
@@ -115,7 +132,80 @@ class DataManager:
         time_window_files = list(self.input_dir.glob("*需排线销售订单带计划发货时间*.csv"))
         time_windows = {}
         
-        # Load time windows first
+        # Load order details for demands
+        detail_files = list(self.input_dir.glob("*订单商品明细*.csv"))
+        customer_demands = {}
+        
+        # Load special fulfillment rules and customer mapping
+        special_rules_files = list(self.input_dir.glob("*客户特殊履约规则*.csv"))
+        customer_rules = {}
+        customer_mapping = {}  # sub_customer_code -> main_customer info
+        
+        # Load special rules first
+        for csv_file in special_rules_files:
+            try:
+                df = pd.read_csv(csv_file, encoding='utf-8-sig')
+                logger.info(f"Loading special fulfillment rules from {csv_file.name}")
+                
+                for _, row in df.iterrows():
+                    try:
+                        main_code = str(row['主客户编码']).strip() if pd.notna(row['主客户编码']) else ""
+                        main_name = str(row['主客户名称']).strip() if pd.notna(row['主客户名称']) else ""
+                        sub_code = str(row['子客户编码']).strip() if pd.notna(row['子客户编码']) else ""
+                        sub_name = str(row['子客户名称']).strip() if pd.notna(row['子客户名称']) else ""
+                        
+                        if sub_code:
+                            # Store mapping from sub customer to main customer
+                            customer_mapping[sub_code] = {
+                                'main_customer_code': main_code,
+                                'main_customer_name': main_name,
+                                'sub_customer_code': sub_code,
+                                'sub_customer_name': sub_name
+                            }
+                            
+                            # Store special rules for this sub customer
+                            customer_rules[sub_code] = {
+                                'delivery_method': str(row['交接方式']).strip() if pd.notna(row['交接方式']) else "",
+                                'height_restricted': str(row['是否限高']).strip() == '是' if pd.notna(row['是否限高']) else False,
+                                'vehicle_restriction': str(row['限制车型名称']).strip() if pd.notna(row['限制车型名称']) else "",
+                                'extra_work_hours': float(row['额外工作时长（小时）']) if pd.notna(row['额外工作时长（小时）']) and str(row['额外工作时长（小时）']).strip() != '' else 0.0,
+                                'requires_porter': str(row['是否需要搬运工']).strip() == '是' if pd.notna(row['是否需要搬运工']) else False,
+                                'delivery_type': str(row['配送类型']).strip() if pd.notna(row['配送类型']) else "正常"
+                            }
+                            
+                    except Exception as e:
+                        logger.debug(f"Error processing special rules row: {e}")
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"Could not load special rules from {csv_file}: {e}")
+        
+        # Load order details first to get demands
+        for csv_file in detail_files:
+            try:
+                df = pd.read_csv(csv_file, encoding='utf-8-sig')
+                logger.info(f"Loading order details from {csv_file.name}")
+                
+                for _, row in df.iterrows():
+                    try:
+                        order_id = str(row['销售单号']).strip() if pd.notna(row['销售单号']) else None
+                        product_id = str(row['商品编码']) if pd.notna(row['商品编码']) else None
+                        quantity = float(row['拣货数量']) if pd.notna(row['拣货数量']) else 0.0
+                        
+                        if order_id and product_id and quantity > 0:
+                            if order_id not in customer_demands:
+                                customer_demands[order_id] = {}
+                            if product_id not in customer_demands[order_id]:
+                                customer_demands[order_id][product_id] = 0
+                            customer_demands[order_id][product_id] += quantity
+                            
+                    except Exception as e:
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"Could not load demands from {csv_file}: {e}")
+        
+        # Load time windows
         for csv_file in time_window_files:
             try:
                 df = pd.read_csv(csv_file, encoding='utf-8-sig')
@@ -173,6 +263,13 @@ class DataManager:
                         # Get time windows for this order
                         tw = time_windows.get(order_id, {'start': '06:00:00', 'end': '18:00:00'})
                         
+                        # Get demand for this order
+                        demand = customer_demands.get(order_id, {})
+                        
+                        # Get special rules for this customer
+                        special_rules = customer_rules.get(customer_id, {})
+                        main_customer_info = customer_mapping.get(customer_id, {})
+                        
                         customer = Customer(
                             id=order_id,  # Use order_id as unique identifier instead of customer_id
                             name=customer_name,
@@ -181,8 +278,19 @@ class DataManager:
                             longitude=lng,
                             time_window_start=tw['start'],
                             time_window_end=tw['end'],
-                            demand={},  # Will be filled from order details
-                            sales_order=order_id  # Actual sales order ID from CSV
+                            demand=demand,  # Use demand from order details
+                            sales_order=order_id,  # Actual sales order ID from CSV
+                            orders=[order_id],  # Initialize with this order
+                            main_customer_code=main_customer_info.get('main_customer_code', ""),
+                            main_customer_name=main_customer_info.get('main_customer_name', ""),
+                            sub_customer_code=customer_id,  # Use customer_id as sub_customer_code
+                            sub_customer_name=customer_name,
+                            delivery_method=special_rules.get('delivery_method', ""),
+                            height_restricted=special_rules.get('height_restricted', False),
+                            vehicle_restriction=special_rules.get('vehicle_restriction', ""),
+                            extra_work_hours=special_rules.get('extra_work_hours', 0.0),
+                            requires_porter=special_rules.get('requires_porter', False),
+                            delivery_type=special_rules.get('delivery_type', "正常")
                         )
                         
                         self.customers.append(customer)
@@ -195,6 +303,83 @@ class DataManager:
                         
             except Exception as e:
                 logger.warning(f"Could not load customers from {csv_file}: {e}")
+        
+        # Merge customers with same sub_customer_code (multiple orders per customer)
+        logger.info("Merging customers with multiple orders...")
+        customer_groups = {}
+        
+        for customer in self.customers:
+            sub_code = customer.sub_customer_code
+            if sub_code not in customer_groups:
+                customer_groups[sub_code] = []
+            customer_groups[sub_code].append(customer)
+        
+        # Create merged customer list
+        merged_customers = []
+        customers_with_multiple_orders = 0
+        
+        for sub_code, customers_list in customer_groups.items():
+            if len(customers_list) == 1:
+                # Single order customer - keep as is
+                merged_customers.append(customers_list[0])
+            else:
+                # Multiple orders - merge them
+                customers_with_multiple_orders += 1
+                base_customer = customers_list[0]  # Use first customer as base
+                
+                # Merge demands from all orders
+                merged_demand = {}
+                all_orders = []
+                
+                for customer in customers_list:
+                    all_orders.append(customer.sales_order)
+                    for product_id, quantity in customer.demand.items():
+                        if product_id not in merged_demand:
+                            merged_demand[product_id] = 0
+                        merged_demand[product_id] += quantity
+                
+                # Create merged customer with combined data
+                merged_customer = Customer(
+                    id=f"MERGED_{sub_code}",  # Unique ID for merged customer
+                    name=base_customer.name,
+                    address=base_customer.address,
+                    latitude=base_customer.latitude,
+                    longitude=base_customer.longitude,
+                    time_window_start=base_customer.time_window_start,
+                    time_window_end=base_customer.time_window_end,
+                    demand=merged_demand,
+                    sales_order=base_customer.sales_order,  # Keep first order as primary
+                    orders=all_orders,  # All orders for this customer
+                    main_customer_code=base_customer.main_customer_code,
+                    main_customer_name=base_customer.main_customer_name,
+                    sub_customer_code=base_customer.sub_customer_code,
+                    sub_customer_name=base_customer.sub_customer_name,
+                    delivery_method=base_customer.delivery_method,
+                    height_restricted=base_customer.height_restricted,
+                    vehicle_restriction=base_customer.vehicle_restriction,
+                    extra_work_hours=base_customer.extra_work_hours,
+                    requires_porter=base_customer.requires_porter,
+                    delivery_type=base_customer.delivery_type
+                )
+                
+                merged_customers.append(merged_customer)
+        
+        # Replace customer list with merged customers
+        self.customers = merged_customers
+        
+        # Calculate statistics
+        customers_with_demands = sum(1 for c in self.customers if c.demand)
+        customers_with_special_rules = sum(1 for c in self.customers if c.delivery_method or c.height_restricted or c.vehicle_restriction or c.requires_porter)
+        total_products = sum(len(c.demand) for c in self.customers)
+        total_quantity = sum(sum(c.demand.values()) for c in self.customers)
+        
+        logger.info(f"Customer loading completed:")
+        logger.info(f"  - Total customers: {len(self.customers)}")
+        logger.info(f"  - Customers with demands: {customers_with_demands}")
+        logger.info(f"  - Customers with special rules: {customers_with_special_rules}")
+        logger.info(f"  - Customers with multiple orders: {customers_with_multiple_orders}")
+        logger.info(f"  - Total unique products: {total_products}")
+        logger.info(f"  - Total quantity across all customers: {total_quantity}")
     
     def _load_vehicles(self):
         """Load vehicle data from CSV files"""
@@ -530,29 +715,26 @@ class GreedyVRPTWSolver(VRPTWSolver):
             # Initialize
             self._initialize_solver()
             
-            # Load customer demands from order details
-            self._load_customer_demands()
-            
-            # Create routes using greedy approach
+            # Create routes
             self._create_routes()
             
-            # Calculate final metrics
-            self._calculate_metrics()
-            
+            # Build solution
             solution = {
                 'algorithm': 'Greedy',
                 'routes': self.routes,
                 'total_distance': self.total_distance,
                 'total_time': self.total_time,
-                'vehicles_used': len(self.routes),
-                'customers_served': len(self.problem.data_manager.customers) - len(self.unvisited_customers),
-                'unvisited_customers': len(self.unvisited_customers),
+                'vehicles_used': len([r for r in self.routes if r['customers']]),
+                'customers_served': sum(len(r['customers']) for r in self.routes),
+                'unserved_customers': len(self.unvisited_customers),
                 'status': 'solved'
             }
             
-            self.solution = solution
-            logger.info(f"Greedy solution: {len(self.routes)} routes, {solution['customers_served']} customers served")
+            logger.info(f"Greedy solution: {solution['vehicles_used']} routes, {solution['customers_served']} customers served")
+            if solution['unserved_customers'] > 0:
+                logger.warning(f"{solution['unserved_customers']} customers could not be assigned to any route")
             
+            self.solution = solution
             return solution
             
         except Exception as e:
@@ -576,69 +758,6 @@ class GreedyVRPTWSolver(VRPTWSolver):
         
         # Sort customers by time window start time for better initial ordering
         self.unvisited_customers.sort(key=lambda c: c.time_window_start)
-    
-    def _load_customer_demands(self):
-        """Load customer demands from order details"""
-        try:
-            # Load order details to get actual demands
-            detail_files = list(Path("csv_data/input").glob("*订单商品明细*.csv"))
-            customer_demands = {}
-            
-            # Also need to map sales orders to customer IDs
-            order_to_customer = {}
-            
-            # First, load the mapping from sales orders to customers
-            order_files = list(Path("csv_data/input").glob("*需排线销售订单*.csv"))
-            for csv_file in order_files:
-                if "时间" not in csv_file.name:  # Skip the time window file
-                    try:
-                        df = pd.read_csv(csv_file, encoding='utf-8-sig')
-                        for _, row in df.iterrows():
-                            if pd.notna(row['销售订单']) and pd.notna(row['子客户编码']):
-                                order_id = str(row['销售订单']).strip()
-                                customer_id = str(row['子客户编码']).strip()
-                                order_to_customer[order_id] = customer_id
-                    except Exception as e:
-                        logger.warning(f"Could not load order mapping from {csv_file}: {e}")
-            
-            # Now load the order details
-            for csv_file in detail_files:
-                try:
-                    df = pd.read_csv(csv_file, encoding='utf-8-sig')
-                    
-                    for _, row in df.iterrows():
-                        try:
-                            order_id = str(row['销售单号']).strip() if pd.notna(row['销售单号']) else None
-                            product_id = str(row['商品编码']) if pd.notna(row['商品编码']) else None
-                            quantity = float(row['拣货数量']) if pd.notna(row['拣货数量']) else 0.0
-                            
-                            if order_id and product_id and quantity > 0:
-                                # Map order to customer
-                                customer_id = order_to_customer.get(order_id)
-                                if customer_id:
-                                    if customer_id not in customer_demands:
-                                        customer_demands[customer_id] = {}
-                                    if product_id not in customer_demands[customer_id]:
-                                        customer_demands[customer_id][product_id] = 0
-                                    customer_demands[customer_id][product_id] += quantity
-                                
-                        except Exception as e:
-                            continue
-                            
-                except Exception as e:
-                    logger.warning(f"Could not load demands from {csv_file}: {e}")
-            
-            # Map demands to customers
-            demands_assigned = 0
-            for customer in self.unvisited_customers:
-                customer.demand = customer_demands.get(customer.id, {})
-                if customer.demand:
-                    demands_assigned += 1
-            
-            logger.info(f"Loaded demands for {demands_assigned} out of {len(self.unvisited_customers)} customers")
-                
-        except Exception as e:
-            logger.warning(f"Could not load customer demands: {e}")
     
     def _create_routes(self):
         """Create routes using greedy algorithm"""
