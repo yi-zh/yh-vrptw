@@ -52,10 +52,11 @@ class Customer:
     time_window_start: str
     time_window_end: str
     demand: Dict[str, float]  # product_id -> quantity
+    # volume: float
     sales_order: str = ""  # Actual sales order ID from CSV
     priority: int = 1
     product_count: int = 0  # Number of different products
-    total_quantity: float = 0.0  # Total quantity across all products
+    volume: float = 0.0  # Total quantity across all products
     
     # Extended customer information
     main_customer_code: str = ""  # 主客户编码
@@ -1219,18 +1220,22 @@ class OutputManager:
                 chinese_vehicle_type = vehicle_type_mapping.get(vehicle_type, "4.2米")
                 
                 route_name = f"{vehicle_id}线"
-                total_route_volume = route.get('volume_load', 0)
-                total_route_distance = route.get('distance', 0)
-                total_route_time = route.get('time', 0)
+                total_route_volume = route.get('load_volume', 0)
+                total_route_distance = route.get('total_distance', 0)
+                total_route_time = route.get('total_time', 0)
                 
                 # Calculate latest departure time from warehouse (route start time)
-                route_start_minutes = route.get('start_time', 0)
+                route_start_minutes = route.get('vehicle_work_start_time', 0)
                 latest_departure_time = minutes_to_datetime_str(route_start_minutes)
                 
-                for i, customer_info in enumerate(route['customers']):
+                for i in range(len(route['sequence'])):
+                    customer_id = route['sequence'][i]
+                    if customer_id == "warehouse":
+                        continue
+
                     # Find customer details
                     customer = next((c for c in data_manager.customers 
-                                   if c.id == customer_info['customer_id']), None)
+                                   if c.id == customer_id or c.id == customer_id.split("-")[0]), None)
                     
                     if not customer:
                         continue
@@ -1239,18 +1244,17 @@ class OutputManager:
                     sales_order = customer.sales_order if customer.sales_order else f"OM{customer.id}"
                     
                     # Calculate arrival and departure times
-                    arrival_minutes = customer_info.get('arrival_time', 0)
-                    service_time = customer_info.get('service_time', 10)
-                    departure_minutes = arrival_minutes + service_time
+                    arrival_minutes = route['arrival_times'][customer_id]
+                    departure_minutes = route['departure_times'][customer_id]
                     
                     arrival_time_str = minutes_to_datetime_str(arrival_minutes)
                     departure_time_str = minutes_to_datetime_str(departure_minutes)
                     
                     # Get customer volume
-                    customer_volume = customer_info.get('volume', 0) * 1000  # Convert to liters
+                    customer_volume = min(customer.volume, route['load_volume']) # Convert to liters
                     
                     # Calculate distance for this customer (from previous location)
-                    if i == 0:
+                    if i == 1:
                         # First customer - distance from warehouse (use small default)
                         distance_km = 5.0  # Default warehouse distance
                     else:
@@ -1269,15 +1273,15 @@ class OutputManager:
                         '纬度': customer.latitude,
                         '方量': round(customer_volume, 4),
                         '线路名称': route_name,
-                        '配送顺序': i + 1,
+                        '配送顺序': i,
                         '预计送达时间': arrival_time_str,
                         '预计离开时间': departure_time_str,
                         '距离': round(distance_km, 3),
                         '行驶时间': travel_time_minutes,
-                        '线路单边里程': round(total_route_distance, 3) if i == 0 else '',
-                        '线路时间(单边)': round(total_route_time, 2) if i == 0 else '',
-                        '线路方量': round(total_route_volume * 1000, 3) if i == 0 else '',  # Convert to liters
-                        '最晚离仓时间': latest_departure_time if i == 0 else '',
+                        '线路单边里程': round(total_route_distance, 3) if i == 1 else '',
+                        '线路时间(单边)': round(total_route_time, 2) if i == 1 else '',
+                        '线路方量': round(total_route_volume * 1000, 3) if i == 1 else '',  # Convert to liters
+                        '最晚离仓时间': latest_departure_time if i == 1 else '',
                         '车型': chinese_vehicle_type
                     }
                     output_data.append(row)
@@ -1304,11 +1308,12 @@ class OutputManager:
 def minutes_to_datetime_str(minutes: int) -> str:
     """Convert minutes since midnight to datetime string"""
     try:
-        hours = minutes // 60
-        mins = minutes % 60
+        minutes_int = int(round(minutes))
+        hours = minutes_int // 60
+        mins = minutes_int % 60
         # Use 2025-06-30 as the base date (from the time windows)
         return f"2025-06-30 {hours:02d}:{mins:02d}:00"
-    except:
+    except Exception as e:
         return "2025-06-30 00:00:00"
 
 class VRPTWMain:

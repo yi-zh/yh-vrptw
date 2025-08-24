@@ -1,8 +1,11 @@
+import copy
 import json
+import re
 import math
 from typing import List, Dict, Tuple, Optional, Any
 import numpy as np
 from datetime import datetime
+import traceback
 import random
 from copy import deepcopy
 
@@ -11,24 +14,49 @@ from main import Customer, Vehicle, Product, Location, VRPTWSolver, VRPTWProblem
     DataPreprocessor
 
 
+VEHICLE_COST_MAP = {
+    0: '0-20KM（元）',
+    1: '21-40KM（元）',
+    2: '41-60KM（元）',
+    3: '61-80KM（元）',
+    4: '81-100KM（元）',
+    5: '100公里以上（元/KM）'
+}
+
+def extract_district(address: str) -> str:
+    """
+    从地址中提取区名（仅返回XX区格式的结果）
+    """
+    # 匹配2-5个汉字加"区"的模式，覆盖大多数区名
+    pattern = r'([\u4e00-\u9fa5]{2}区)'
+    match = re.search(pattern, address)
+
+    if match:
+        return match.group(1)
+    return ""  # 未找到区名时返回空字符串
+
 class SavingsAlgorithmSolver(VRPTWSolver):
     """带时间窗的节约算法求解VRPTW问题"""
 
-    def __init__(self, problem: VRPTWProblem):
+    def __init__(self, problem: VRPTWProblem, is_split:bool):
         super().__init__(problem)
         self.savings = []  # 存储节约量
         self.routes = []  # 存储路径
         self.total_cost = 0.0
+        self.is_split = is_split
 
     def solve(self) -> Dict[str, Any]:
         """实现带时间窗的节约算法"""
         logger.info("使用带时间窗的节约算法求解VRPTW问题...")
 
         try:
+            self.problem.data_manager.vehicles = sorted(self.problem.data_manager.vehicles, key=lambda x: x.capacity_volume)
+            self.max_volume_one_vehicle = self.problem.data_manager.vehicles[-1].capacity_volume * 0.85
             # 1. 初始化：为每个客户创建单独路径
             self._initialize_routes()
 
             # 2. 计算所有客户对之间的节约量
+            # 同一个主客户下的不同子客户由于地址相同，讲道理在saving的时候就应该放在一条车线上了
             self._calculate_savings()
 
             # 3. 按节约量排序
@@ -53,6 +81,8 @@ class SavingsAlgorithmSolver(VRPTWSolver):
 
         except Exception as e:
             logger.error(f"节约算法求解出错: {e}")
+            tb_str = traceback.format_exc()
+            print(tb_str)  # 打印字符串形式的堆栈信息
             return {
                 'algorithm': 'Savings with Time Windows',
                 'routes': [],
@@ -68,6 +98,12 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         for customer in self.problem.data_manager.customers:
             # 计算客户需求
             load = self._calculate_customer_load(customer)
+            customer.volume = load['volume']
+            district = extract_district(customer.address)
+
+            # appropriate_vehicle_type = self._find_suitable_vehicle(load['weight'], load['volume']).vehicle_type \
+            #     if customer.vehicle_restriction == "" else None
+            # specified_vehicle_type = customer.vehicle_restriction if customer.vehicle_restriction != "" else None
 
             # 计算往返距离
             to_customer = self._calculate_distance(warehouse, customer)
@@ -81,38 +117,73 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             # 时间窗处理
             tw_start = self._parse_time(customer.time_window_start)
             tw_end = self._parse_time(customer.time_window_end)
-            # todo 加上这辆车的available_start_time
             arrival_time = max(travel_time, tw_start)
             departure_time = arrival_time + service_time
 
-            # todo 加上运输费用计算
             route = {
                 'vehicle_id': None,  # 尚未分配车辆
+                'vehicle_type': None,
                 'customers': [customer.id],
                 'sequence': [warehouse.id, customer.id, warehouse.id],
                 'total_distance': to_customer + return_distance,
                 'total_time': travel_time + service_time + return_time,
                 'load_weight': load['weight'],
                 'load_volume': load['volume'],
-                'arrival_times': {customer.id: arrival_time},
-                'departure_times': {customer.id: departure_time}
+                'arrival_times': {},
+                'departure_times': {},
+                'district': {district},
+                'specified_vehicle': None,
+                'height_restricted': customer.height_restricted,
+                'breakpoint': None,
+                'single_vehicle': customer.delivery_type == "单点配送",
+                "vehicle_work_start_time": arrival_time - travel_time,
+                "vehicle_work_end_time": departure_time + return_time,
             }
 
-            self.routes.append(route)
+            if self.is_split and load['volume'] > self.max_volume_one_vehicle:
+                if load['volume'] % self.max_volume_one_vehicle == 0:
+                    vehicle_num = int(load['volume'] / self.max_volume_one_vehicle)
+                else:
+                    vehicle_num = int(load['volume'] / self.max_volume_one_vehicle) + 1
+                for i in range(vehicle_num-1):
+                    one_route = copy.deepcopy(route)
+                    new_customer_id = f"{route['customers'][0]}-part{i}"
+                    one_route['customers'][0] = new_customer_id
+                    one_route['sequence'][1] = new_customer_id
+                    one_route['load_weight'] = route['load_weight'] / vehicle_num
+                    one_route['load_volume'] = self.max_volume_one_vehicle
+                    one_route['arrival_times'][new_customer_id] = arrival_time
+                    one_route['departure_times'][new_customer_id] = departure_time
+                    self.routes.append(one_route)
+                last_one_route = copy.deepcopy(route)
+                new_customer_id = f"{route['customers'][0]}-part{vehicle_num-1}"
+                last_one_route['customers'][0] = new_customer_id
+                last_one_route['sequence'][1] = new_customer_id
+                last_one_route['load_weight'] = route['load_weight'] / vehicle_num
+                last_one_route['load_volume'] = load['volume'] - (vehicle_num-1) * self.max_volume_one_vehicle
+                last_one_route['arrival_times'][new_customer_id] = arrival_time
+                last_one_route['departure_times'][new_customer_id] = departure_time
+                self.routes.append(last_one_route)
+            else:
+                route['arrival_times'][customer.id] = arrival_time
+                route['departure_times'][customer.id] = departure_time
+                self.routes.append(route)
 
     def _calculate_savings(self):
         """计算所有客户对之间的节约量"""
         warehouse = self._get_warehouse_location()
 
         for i, customer_i in enumerate(self.problem.data_manager.customers):
+            if customer_i.delivery_type == "单点配送":
+                continue
             for j, customer_j in enumerate(self.problem.data_manager.customers):
+                if customer_j.delivery_type == "单点配送":
+                    continue
                 if i >= j:
                     continue  # 避免重复计算
 
-                # 计算节约量: s_ij = c(0,i) + c(j,0) - c(i,j)
-                # todo 这里计算方式不对，需要计算的是运输成本，注意方向
-                c0i = self._calculate_distance(warehouse, customer_i)
-                cj0 = self._calculate_distance(customer_j, warehouse)
+                c0i = self._calculate_distance(customer_i, warehouse)
+                cj0 = self._calculate_distance(warehouse, customer_j)
                 cij = self._calculate_distance(customer_i, customer_j)
 
                 saving = c0i + cj0 - cij
@@ -160,13 +231,19 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         self._assign_vehicles_to_routes()
 
     def _can_merge_routes(self, route_i, route_j, i_id, j_id) -> bool:
+
+        if route_i['single_vehicle'] or route_j['single_vehicle']:
+            return False
+
         """检查两条路径是否可以合并"""
         # 1. 检查车辆容量约束
         total_weight = route_i['load_weight'] + route_j['load_weight']
         total_volume = route_i['load_volume'] + route_j['load_volume']
 
+        height_restriction = route_i['height_restricted'] and route_j['height_restricted']
+
         # 找到最合适的车辆检查容量
-        suitable_vehicle = self._find_suitable_vehicle(total_weight, total_volume)
+        suitable_vehicle = self._find_suitable_vehicle(total_weight, total_volume, height_restriction)
         if not suitable_vehicle:
             return False
 
@@ -192,11 +269,11 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         j_tw_start = self._parse_time(j_customer.time_window_start)
         j_tw_end = self._parse_time(j_customer.time_window_end)
 
-        # todo check是否卸完货的时间需要不迟于窗结束的时候
         if arrival_j > j_tw_end:  # 到达时间晚于时间窗结束
             return False
 
-        # 检查合并后返回仓库的时间是否在车辆可用时间内
+        # 检查合并后返回仓库的时间是否在车辆可用时间内, 单司机工作时间不超过6小时
+        vehicle_work_start_time = route_i['vehicle_work_start_time']
         service_time_j = self._get_service_time(j_customer)
         departure_j = max(arrival_j, j_tw_start) + service_time_j
         return_time = self._calculate_travel_time(
@@ -204,6 +281,9 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         )
 
         if departure_j + return_time > self._parse_time(suitable_vehicle.available_time_end):
+            return False
+
+        if departure_j + return_time - vehicle_work_start_time > 6 * 60:
             return False
 
         return True
@@ -226,6 +306,9 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         # 合并客户列表
         new_customers = route_i['customers'] + route_j['customers']
 
+        route_i['district'].update(route_j['district'])
+        new_height_restricted = route_i['height_restricted'] or route_j['height_restricted']
+
         # 计算新的到达和离开时间
         new_arrival_times = {**route_i['arrival_times'], **route_j['arrival_times']}
         new_departure_times = {**route_i['departure_times'], **route_j['departure_times']}
@@ -245,8 +328,13 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         new_arrival_times[j_id] = new_arrival_j
         new_departure_times[j_id] = new_departure_j
 
+        return_time = self._calculate_travel_time(
+            self._calculate_distance(j_customer, self._get_warehouse_location())
+        )
+
         return {
             'vehicle_id': None,
+            'vehicle_type': None,
             'customers': new_customers,
             'sequence': new_sequence,
             'total_distance': new_distance,
@@ -257,28 +345,43 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             'load_volume': new_volume,
             # 多条不小于2个customer的如今合并时，需要更新后面的customer的时间数据
             'arrival_times': new_arrival_times,
-            'departure_times': new_departure_times
+            'departure_times': new_departure_times,
+            'district': route_i['district'],
+            'specified_vehicle': None,
+            'height_restricted': new_height_restricted,
+            'breakpoint': None,
+            'single_vehicle': False,
+            'vehicle_work_start_time': route_i['vehicle_work_start_time'],
+            'vehicle_work_end_time': new_departure_j + return_time
         }
 
     def _assign_vehicles_to_routes(self):
         """为每条路径分配最合适的车辆"""
+        selected_vehicles = set()
         for route in self.routes:
             # 找到能满足该路径需求的最合适车辆
             best_vehicle = None
             min_cost = float('inf')
-
+            appropriate_vehicle = None
             for vehicle in self.problem.data_manager.vehicles:
-                if (vehicle.capacity_weight >= route['load_weight'] and
-                        vehicle.capacity_volume >= route['load_volume']):
-                    # 计算使用该车辆的成本 todo 考虑最大装载率
-                    cost = route['total_distance'] * vehicle.cost_per_km
-                    if cost < min_cost:
-                        min_cost = cost
+                if vehicle.id in selected_vehicles:
+                    continue
+                if route['height_restricted'] and vehicle.vehicle_type.startswith("4.2"):
+                    continue
+                # todo 暂时只考虑体积约束
+                # if vehicle.capacity_weight >= route['load_weight'] and vehicle.capacity_volume >= route['load_volume']:、
+                if vehicle.capacity_volume >= route['load_volume']:
+                    appropriate_vehicle = vehicle
+                    # 满载率约束，暂时只考虑体积
+                    if route['load_volume'] <= 0.85 * vehicle.capacity_volume:
                         best_vehicle = vehicle
-
-            if best_vehicle:
-                route['vehicle_id'] = best_vehicle.id
-                self.total_cost += min_cost
+                        break
+            if best_vehicle or appropriate_vehicle:
+                route['vehicle_id'] = best_vehicle.id if best_vehicle is not None else appropriate_vehicle.id
+                route['vehicle_type'] = best_vehicle.vehicle_type if best_vehicle is not None else appropriate_vehicle.vehicle_type
+                selected_vehicles.add(route['vehicle_id'])
+                route['cost'] = self._calculate_transportation_cost(route)
+                self.total_cost += route['cost']
             else:
                 logger.warning(f"没有合适的车辆满足路径需求")
 
@@ -304,13 +407,18 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 return route
         return None
 
-    def _find_suitable_vehicle(self, weight: float, volume: float) -> Optional[Vehicle]:
+    def _find_suitable_vehicle(self, weight: float, volume: float, height_restriction: bool) -> Optional[Vehicle]:
         """找到能满足重量和体积需求的车辆"""
+        appropriate_vehicle = None
         for vehicle in self.problem.data_manager.vehicles:
-            # todo 考虑装载率约束
+            if height_restriction and vehicle.vehicle_type.startswith("4.2"):
+                continue
             if vehicle.capacity_weight >= weight and vehicle.capacity_volume >= volume:
-                return vehicle
-        return None
+                appropriate_vehicle = vehicle
+                # 满载率约束，暂时只考虑体积
+                if volume <= 0.85 * vehicle.capacity_volume:
+                    return vehicle
+        return appropriate_vehicle
 
     def _calculate_customer_load(self, customer: Customer) -> Dict[str, float]:
         """计算客的总重量和总体积需求"""
@@ -320,8 +428,12 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         for product_id, quantity in customer.demand.items():
             product = next((p for p in self.problem.data_manager.products if p.id == product_id), None)
             if product:
-                total_weight += product.weight_per_unit * quantity
-                total_volume += product.volume_per_unit * quantity
+                if product.category == 'KG':
+                    total_weight += quantity
+                    total_volume += product.volume_per_unit * quantity
+                else:
+                    total_weight += product.weight_per_unit * quantity
+                    total_volume += product.volume_per_unit * quantity
 
         return {'weight': total_weight, 'volume': total_volume}
 
@@ -338,8 +450,24 @@ class SavingsAlgorithmSolver(VRPTWSolver):
 
     def _get_service_time(self, customer: Customer) -> float:
         """获取客户的服务时间（分钟）"""
-        # todo 需要根据客户需求数量动态计算
-        return 10.0  # 默认10分钟
+        addition_time = customer.extra_work_hours * 60
+        volume = customer.volume
+        delivery_method = customer.delivery_method if (customer.delivery_method is not None
+                                                       or customer.delivery_method != ""
+                                                       or len(customer.delivery_method) > 0) else "称重点数"
+        if delivery_method == "信任交接":
+            if volume <= 500:
+                return 15 + addition_time
+            else:
+                return 15 + (volume-500) / 1000 * 10 + addition_time
+        else:
+        # elif delivery_method == "称重点数":
+            if volume <= 500:
+                return 20 + volume / 1000 * 15 + addition_time
+            else:
+                return 20 + (volume-500) / 1000 * 10 + volume / 1000 * 15 + addition_time
+        # else:
+        #     raise ValueError(f"Order {customer.id} 的交接方式错误。its way is {customer.delivery_method}")
 
     def _parse_time(self, time_str: str) -> float:
         """将时间字符串转换为分钟数（自午夜起）"""
@@ -359,6 +487,39 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                     return time_obj.hour * 60 + time_obj.minute
                 except ValueError:
                     return 0.0  # 所有格式都不匹配时返回默认值
+
+    def _calculate_transportation_cost(self, route:Dict[str, Any]):
+        selected_vehicle_type = route['vehicle_type']
+        distance = route['total_distance']
+        customers_num = len(route['customers'])
+
+        base_fee = 0
+        cost_stage = self._get_cost_stage(distance)
+        if cost_stage <= 4:
+            base_fee = self.problem.data_manager.vehicle_costs[selected_vehicle_type][VEHICLE_COST_MAP[cost_stage]]
+        else:
+            base_fee = self.problem.data_manager.vehicle_costs[selected_vehicle_type][VEHICLE_COST_MAP[4]]
+            if selected_vehicle_type in ["大型面包车", "4.2m厢式货车"]:
+                base_fee += float(self.problem.data_manager.vehicle_costs[selected_vehicle_type][VEHICLE_COST_MAP[5]]) * (distance-100)
+
+        if selected_vehicle_type == "4.2m厢式货车":
+            return base_fee + 20 * max(0, customers_num-2)
+        else:
+            return base_fee + 15 * max(0, customers_num - 2)
+
+    def _get_cost_stage(self, distance: float):
+        if distance < 21:
+            return 0
+        elif distance < 41:
+            return 1
+        elif distance < 61:
+            return 2
+        elif distance < 81:
+            return 3
+        elif distance <= 100:
+            return 4
+        else:
+            return 5
 
     def _calculate_metrics(self):
         """计算解决方案的各项指标"""
@@ -399,14 +560,14 @@ class VRPTWMain:
                 logger.error("Failed to construct VRPTW problem")
                 return False
 
-            solver = SavingsAlgorithmSolver(self.problem)
+            solver = SavingsAlgorithmSolver(self.problem, True)
             solution = solver.solve()
 
-            logger.info(json.dumps(solution))
+            logger.info(solution)
 
-            # # Step 5: Generate output
-            # logger.info("Generating output to csv_data/output/result.csv")
-            # self.output_manager.generate_output(solution, self.data_manager)
+            # Step 5: Generate output
+            logger.info("Generating output to csv_data/output/result.csv")
+            self.output_manager.generate_output(solution, self.data_manager)
 
             logger.info("VRPTW solving pipeline completed successfully!")
             return True
