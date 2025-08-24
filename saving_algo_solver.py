@@ -35,6 +35,116 @@ def extract_district(address: str) -> str:
         return match.group(1)
     return ""  # 未找到区名时返回空字符串
 
+
+def get_service_time(customer: Customer) -> float:
+    """获取客户的服务时间（分钟）"""
+    addition_time = customer.extra_work_hours * 60
+    volume = customer.volume
+    delivery_method = customer.delivery_method if (customer.delivery_method is not None
+                                                   or customer.delivery_method != ""
+                                                   or len(customer.delivery_method) > 0) else "称重点数"
+    if delivery_method == "信任交接":
+        if volume <= 500:
+            return 15 + addition_time
+        else:
+            return 15 + (volume-500) / 1000 * 10 + addition_time
+    else:
+    # elif delivery_method == "称重点数":
+        if volume <= 500:
+            return 20 + volume / 1000 * 15 + addition_time
+        else:
+            return 20 + (volume-500) / 1000 * 10 + volume / 1000 * 15 + addition_time
+    # else:
+    #     raise ValueError(f"Order {customer.id} 的交接方式错误。its way is {customer.delivery_method}")
+
+
+def calculate_distance(loc1, loc2) -> float:
+    """计算两个位置之间的距离（使用已有方法或实现）"""
+    # 这里可以使用实际的距离计算方法
+    # 示例使用欧氏距离
+    return math.hypot(loc1.longitude - loc2.longitude, loc1.latitude - loc2.latitude) * 100  # 简单转换为公里
+
+
+def calculate_travel_time(distance: float) -> float:
+    """根据距离计算旅行时间（分钟）"""
+    avg_speed = 40.0  # 平均速度，公里/小时
+    return (distance / avg_speed) * 60  # 转换为分钟
+
+
+def parse_time(time_str: str) -> float:
+    """将时间字符串转换为分钟数（自午夜起）"""
+    try:
+        # 看PPT是当天排线，不涉及跨天
+        time_obj = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+        return time_obj.hour * 60 + time_obj.minute
+    except ValueError:
+        try:
+            # 适配 "07:15:00" 格式
+            time_obj = datetime.strptime(time_str, "%H:%M:%S")
+            return time_obj.hour * 60 + time_obj.minute
+        except ValueError:
+            try:
+                # 适配 "07:15" 格式
+                time_obj = datetime.strptime(time_str, "%H:%M")
+                return time_obj.hour * 60 + time_obj.minute
+            except ValueError:
+                return 0.0  # 所有格式都不匹配时返回默认值
+
+
+def get_cost_stage(distance: float):
+    if distance < 21:
+        return 0
+    elif distance < 41:
+        return 1
+    elif distance < 61:
+        return 2
+    elif distance < 81:
+        return 3
+    elif distance <= 100:
+        return 4
+    else:
+        return 5
+
+
+def calculate_transportation_cost(route:Dict[str, Any], fee_map):
+    selected_vehicle_type = route['vehicle_type']
+    distance = route['total_distance']
+    customers_num = len(route['customers'])
+
+    base_fee = 0
+    cost_stage = get_cost_stage(distance)
+    if cost_stage <= 4:
+        base_fee = fee_map[selected_vehicle_type][VEHICLE_COST_MAP[cost_stage]]
+    else:
+        base_fee = fee_map[selected_vehicle_type][VEHICLE_COST_MAP[4]]
+        if selected_vehicle_type in ["大型面包车", "4.2m厢式货车"]:
+            base_fee += float(fee_map[selected_vehicle_type][VEHICLE_COST_MAP[5]]) * (
+                        distance - 100)
+
+    if selected_vehicle_type == "4.2m厢式货车":
+        return base_fee + 20 * max(0, customers_num - 2)
+    else:
+        return base_fee + 15 * max(0, customers_num - 2)
+
+
+def calculate_customer_load(customer: Customer, product_map):
+    """计算客的总重量和总体积需求"""
+    total_weight = 0.0
+    total_volume = 0.0
+
+    for product_id, quantity in customer.demand.items():
+        product = product_map[product_id]
+        if product:
+            if product.category == 'KG':
+                total_weight += quantity
+                total_volume += product.volume_per_unit * quantity
+            else:
+                total_weight += product.weight_per_unit * quantity
+                total_volume += product.volume_per_unit * quantity
+
+    return {'weight': total_weight, 'volume': total_volume}
+
+
 class SavingsAlgorithmSolver(VRPTWSolver):
     """带时间窗的节约算法求解VRPTW问题"""
 
@@ -50,6 +160,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         logger.info("使用带时间窗的节约算法求解VRPTW问题...")
 
         try:
+            self._establish_info_map()
             self.problem.data_manager.vehicles = sorted(self.problem.data_manager.vehicles, key=lambda x: x.capacity_volume)
             self.max_volume_one_vehicle = self.problem.data_manager.vehicles[-1].capacity_volume * 0.85
             # 1. 初始化：为每个客户创建单独路径
@@ -91,6 +202,17 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 'error': str(e)
             }
 
+    def _establish_info_map(self):
+        self.vehicle_map = {}
+        self.customer_map = {}
+        self.product_map = {}
+        for vehicle in self.problem.data_manager.vehicles:
+            self.vehicle_map[vehicle.id] = vehicle
+        for customer in self.problem.data_manager.customers:
+            self.customer_map[customer.id] = customer
+        for product in self.problem.data_manager.products:
+            self.product_map[product.id] = product
+
     def _initialize_routes(self):
         """初始化路径：每个客户单独一条路径（仓库-客户-仓库）"""
         warehouse = self._get_warehouse_location()
@@ -99,6 +221,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             # 计算客户需求
             load = self._calculate_customer_load(customer)
             customer.volume = load['volume']
+            customer.weight = load['weight']
             district = extract_district(customer.address)
 
             # appropriate_vehicle_type = self._find_suitable_vehicle(load['weight'], load['volume']).vehicle_type \
@@ -106,17 +229,17 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             # specified_vehicle_type = customer.vehicle_restriction if customer.vehicle_restriction != "" else None
 
             # 计算往返距离
-            to_customer = self._calculate_distance(warehouse, customer)
-            return_distance = self._calculate_distance(customer, warehouse)
+            to_customer = calculate_distance(warehouse, customer)
+            return_distance = calculate_distance(customer, warehouse)
 
             # 计算时间
-            travel_time = self._calculate_travel_time(to_customer)
-            service_time = self._get_service_time(customer)
-            return_time = self._calculate_travel_time(return_distance)
+            travel_time = calculate_travel_time(to_customer)
+            service_time = get_service_time(customer)
+            return_time = calculate_travel_time(return_distance)
 
             # 时间窗处理
-            tw_start = self._parse_time(customer.time_window_start)
-            tw_end = self._parse_time(customer.time_window_end)
+            tw_start = parse_time(customer.time_window_start)
+            tw_end = parse_time(customer.time_window_end)
             arrival_time = max(travel_time, tw_start)
             departure_time = arrival_time + service_time
 
@@ -155,6 +278,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                     one_route['arrival_times'][new_customer_id] = arrival_time
                     one_route['departure_times'][new_customer_id] = departure_time
                     self.routes.append(one_route)
+                    self._add_virtual_customer(new_customer_id, self.max_volume_one_vehicle, route['load_weight'] / vehicle_num, customer)
                 last_one_route = copy.deepcopy(route)
                 new_customer_id = f"{route['customers'][0]}-part{vehicle_num-1}"
                 last_one_route['customers'][0] = new_customer_id
@@ -164,10 +288,20 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 last_one_route['arrival_times'][new_customer_id] = arrival_time
                 last_one_route['departure_times'][new_customer_id] = departure_time
                 self.routes.append(last_one_route)
+                self._add_virtual_customer(new_customer_id, load['volume'] - (vehicle_num-1) * self.max_volume_one_vehicle,
+                                           route['load_weight'] / vehicle_num, customer)
+                del self.customer_map[customer.id]
             else:
                 route['arrival_times'][customer.id] = arrival_time
                 route['departure_times'][customer.id] = departure_time
                 self.routes.append(route)
+
+    def _add_virtual_customer(self, cus_id, volume, weight, original_customer):
+        virtual_customer = copy.deepcopy(original_customer)
+        virtual_customer.id = cus_id
+        virtual_customer.volume = volume
+        virtual_customer.weight = weight
+        self.customer_map[cus_id] = virtual_customer
 
     def _calculate_savings(self):
         """计算所有客户对之间的节约量"""
@@ -182,9 +316,9 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 if i >= j:
                     continue  # 避免重复计算
 
-                c0i = self._calculate_distance(customer_i, warehouse)
-                cj0 = self._calculate_distance(warehouse, customer_j)
-                cij = self._calculate_distance(customer_i, customer_j)
+                c0i = calculate_distance(customer_i, warehouse)
+                cj0 = calculate_distance(warehouse, customer_j)
+                cij = calculate_distance(customer_i, customer_j)
 
                 saving = c0i + cj0 - cij
 
@@ -259,28 +393,28 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         # 计算合并后的时间约束
         warehouse = self._get_warehouse_location()
         last_departure_i = route_i['departure_times'][i_id]
-        travel_time_ij = self._calculate_travel_time(
-            self._calculate_distance(self._get_customer_by_id(i_id), self._get_customer_by_id(j_id))
+        travel_time_ij = calculate_travel_time(
+            calculate_distance(self.customer_map[i_id], self.customer_map[j_id])
         )
         arrival_j = last_departure_i + travel_time_ij
 
         # 检查是否满足j的时间窗
-        j_customer = self._get_customer_by_id(j_id)
-        j_tw_start = self._parse_time(j_customer.time_window_start)
-        j_tw_end = self._parse_time(j_customer.time_window_end)
+        j_customer = self.customer_map[j_id]
+        j_tw_start = parse_time(j_customer.time_window_start)
+        j_tw_end = parse_time(j_customer.time_window_end)
 
         if arrival_j > j_tw_end:  # 到达时间晚于时间窗结束
             return False
 
         # 检查合并后返回仓库的时间是否在车辆可用时间内, 单司机工作时间不超过6小时
         vehicle_work_start_time = route_i['vehicle_work_start_time']
-        service_time_j = self._get_service_time(j_customer)
+        service_time_j = get_service_time(j_customer)
         departure_j = max(arrival_j, j_tw_start) + service_time_j
-        return_time = self._calculate_travel_time(
-            self._calculate_distance(j_customer, warehouse)
+        return_time = calculate_travel_time(
+            calculate_distance(j_customer, warehouse)
         )
 
-        if departure_j + return_time > self._parse_time(suitable_vehicle.available_time_end):
+        if departure_j + return_time > parse_time(suitable_vehicle.available_time_end):
             return False
 
         if departure_j + return_time - vehicle_work_start_time > 6 * 60:
@@ -295,9 +429,9 @@ class SavingsAlgorithmSolver(VRPTWSolver):
 
         # 计算新的距离和时间
         new_distance = route_i['total_distance'] + route_j['total_distance'] - \
-                       self._calculate_distance(self._get_customer_by_id(i_id), self._get_warehouse_location()) - \
-                       self._calculate_distance(self._get_warehouse_location(), self._get_customer_by_id(j_id)) + \
-                       self._calculate_distance(self._get_customer_by_id(i_id), self._get_customer_by_id(j_id))
+                       calculate_distance(self.customer_map[i_id], self._get_warehouse_location()) - \
+                       calculate_distance(self._get_warehouse_location(), self.customer_map[j_id]) + \
+                       calculate_distance(self.customer_map[i_id], self.customer_map[j_id])
 
         # 合并装载信息
         new_weight = route_i['load_weight'] + route_j['load_weight']
@@ -314,22 +448,22 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         new_departure_times = {**route_i['departure_times'], **route_j['departure_times']}
 
         # 更新j的到达时间
-        i_customer = self._get_customer_by_id(i_id)
-        j_customer = self._get_customer_by_id(j_id)
+        i_customer = self.customer_map[i_id]
+        j_customer = self.customer_map[j_id]
 
-        travel_time_ij = self._calculate_travel_time(
-            self._calculate_distance(i_customer, j_customer)
+        travel_time_ij = calculate_travel_time(
+            calculate_distance(i_customer, j_customer)
         )
 
         new_arrival_j = new_departure_times[i_id] + travel_time_ij
-        new_departure_j = max(new_arrival_j, self._parse_time(j_customer.time_window_start)) + \
-                          self._get_service_time(j_customer)
+        new_departure_j = max(new_arrival_j, parse_time(j_customer.time_window_start)) + \
+                          get_service_time(j_customer)
 
         new_arrival_times[j_id] = new_arrival_j
         new_departure_times[j_id] = new_departure_j
 
-        return_time = self._calculate_travel_time(
-            self._calculate_distance(j_customer, self._get_warehouse_location())
+        return_time = calculate_travel_time(
+            calculate_distance(j_customer, self._get_warehouse_location())
         )
 
         return {
@@ -338,8 +472,8 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             'customers': new_customers,
             'sequence': new_sequence,
             'total_distance': new_distance,
-            'total_time': new_departure_j + self._calculate_travel_time(
-                self._calculate_distance(j_customer, self._get_warehouse_location())
+            'total_time': new_departure_j + calculate_travel_time(
+                calculate_distance(j_customer, self._get_warehouse_location())
             ),
             'load_weight': new_weight,
             'load_volume': new_volume,
@@ -361,7 +495,6 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         for route in self.routes:
             # 找到能满足该路径需求的最合适车辆
             best_vehicle = None
-            min_cost = float('inf')
             appropriate_vehicle = None
             for vehicle in self.problem.data_manager.vehicles:
                 if vehicle.id in selected_vehicles:
@@ -393,13 +526,6 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 return loc
         raise ValueError("未找到仓库位置")
 
-    def _get_customer_by_id(self, customer_id: str) -> Customer:
-        """通过ID获取客户"""
-        for customer in self.problem.data_manager.customers:
-            if customer.id == customer_id:
-                return customer
-        raise ValueError(f"未找到ID为{customer_id}的客户")
-
     def _find_route_containing(self, customer_id: str) -> Optional[Dict]:
         """找到包含指定客户的路径"""
         for route in self.routes:
@@ -413,7 +539,8 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         for vehicle in self.problem.data_manager.vehicles:
             if height_restriction and vehicle.vehicle_type.startswith("4.2"):
                 continue
-            if vehicle.capacity_weight >= weight and vehicle.capacity_volume >= volume:
+            # if vehicle.capacity_weight >= weight and vehicle.capacity_volume >= volume:
+            if vehicle.capacity_volume >= volume:
                 appropriate_vehicle = vehicle
                 # 满载率约束，暂时只考虑体积
                 if volume <= 0.85 * vehicle.capacity_volume:
@@ -421,105 +548,10 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         return appropriate_vehicle
 
     def _calculate_customer_load(self, customer: Customer) -> Dict[str, float]:
-        """计算客的总重量和总体积需求"""
-        total_weight = 0.0
-        total_volume = 0.0
-
-        for product_id, quantity in customer.demand.items():
-            product = next((p for p in self.problem.data_manager.products if p.id == product_id), None)
-            if product:
-                if product.category == 'KG':
-                    total_weight += quantity
-                    total_volume += product.volume_per_unit * quantity
-                else:
-                    total_weight += product.weight_per_unit * quantity
-                    total_volume += product.volume_per_unit * quantity
-
-        return {'weight': total_weight, 'volume': total_volume}
-
-    def _calculate_distance(self, loc1, loc2) -> float:
-        """计算两个位置之间的距离（使用已有方法或实现）"""
-        # 这里可以使用实际的距离计算方法
-        # 示例使用欧氏距离
-        return math.hypot(loc1.longitude - loc2.longitude, loc1.latitude - loc2.latitude) * 100  # 简单转换为公里
-
-    def _calculate_travel_time(self, distance: float) -> float:
-        """根据距离计算旅行时间（分钟）"""
-        avg_speed = 40.0  # 平均速度，公里/小时
-        return (distance / avg_speed) * 60  # 转换为分钟
-
-    def _get_service_time(self, customer: Customer) -> float:
-        """获取客户的服务时间（分钟）"""
-        addition_time = customer.extra_work_hours * 60
-        volume = customer.volume
-        delivery_method = customer.delivery_method if (customer.delivery_method is not None
-                                                       or customer.delivery_method != ""
-                                                       or len(customer.delivery_method) > 0) else "称重点数"
-        if delivery_method == "信任交接":
-            if volume <= 500:
-                return 15 + addition_time
-            else:
-                return 15 + (volume-500) / 1000 * 10 + addition_time
-        else:
-        # elif delivery_method == "称重点数":
-            if volume <= 500:
-                return 20 + volume / 1000 * 15 + addition_time
-            else:
-                return 20 + (volume-500) / 1000 * 10 + volume / 1000 * 15 + addition_time
-        # else:
-        #     raise ValueError(f"Order {customer.id} 的交接方式错误。its way is {customer.delivery_method}")
-
-    def _parse_time(self, time_str: str) -> float:
-        """将时间字符串转换为分钟数（自午夜起）"""
-        try:
-            # 看PPT是当天排线，不涉及跨天
-            time_obj = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-            return time_obj.hour * 60 + time_obj.minute
-        except ValueError:
-            try:
-                # 适配 "07:15:00" 格式
-                time_obj = datetime.strptime(time_str, "%H:%M:%S")
-                return time_obj.hour * 60 + time_obj.minute
-            except ValueError:
-                try:
-                    # 适配 "07:15" 格式
-                    time_obj = datetime.strptime(time_str, "%H:%M")
-                    return time_obj.hour * 60 + time_obj.minute
-                except ValueError:
-                    return 0.0  # 所有格式都不匹配时返回默认值
+        return calculate_customer_load(customer, self.product_map)
 
     def _calculate_transportation_cost(self, route:Dict[str, Any]):
-        selected_vehicle_type = route['vehicle_type']
-        distance = route['total_distance']
-        customers_num = len(route['customers'])
-
-        base_fee = 0
-        cost_stage = self._get_cost_stage(distance)
-        if cost_stage <= 4:
-            base_fee = self.problem.data_manager.vehicle_costs[selected_vehicle_type][VEHICLE_COST_MAP[cost_stage]]
-        else:
-            base_fee = self.problem.data_manager.vehicle_costs[selected_vehicle_type][VEHICLE_COST_MAP[4]]
-            if selected_vehicle_type in ["大型面包车", "4.2m厢式货车"]:
-                base_fee += float(self.problem.data_manager.vehicle_costs[selected_vehicle_type][VEHICLE_COST_MAP[5]]) * (distance-100)
-
-        if selected_vehicle_type == "4.2m厢式货车":
-            return base_fee + 20 * max(0, customers_num-2)
-        else:
-            return base_fee + 15 * max(0, customers_num - 2)
-
-    def _get_cost_stage(self, distance: float):
-        if distance < 21:
-            return 0
-        elif distance < 41:
-            return 1
-        elif distance < 61:
-            return 2
-        elif distance < 81:
-            return 3
-        elif distance <= 100:
-            return 4
-        else:
-            return 5
+        return calculate_transportation_cost(route, self.problem.data_manager.vehicle_costs)
 
     def _calculate_metrics(self):
         """计算解决方案的各项指标"""

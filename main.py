@@ -56,8 +56,9 @@ class Customer:
     sales_order: str = ""  # Actual sales order ID from CSV
     priority: int = 1
     product_count: int = 0  # Number of different products
-    volume: float = 0.0  # Total quantity across all products
-    
+    volume: float = 0.0
+    weight: float = 0.0
+
     # Extended customer information
     main_customer_code: str = ""  # 主客户编码
     main_customer_name: str = ""  # 主客户名称
@@ -1253,15 +1254,18 @@ class OutputManager:
                     # Get customer volume
                     customer_volume = min(customer.volume, route['load_volume']) # Convert to liters
                     
-                    # Calculate distance for this customer (from previous location)
-                    if i == 1:
-                        # First customer - distance from warehouse (use small default)
-                        distance_km = 5.0  # Default warehouse distance
-                    else:
-                        # Distance from previous customer (use small default)
-                        distance_km = 2.0  # Default inter-customer distance
-                    
-                    travel_time_minutes = max(1, int(distance_km / 60 * 60))  # Simple calculation
+                    # # Calculate distance for this customer (from previous location)
+                    # if i == 1:
+                    #     # First customer - distance from warehouse (use small default)
+                    #     distance_km = 5.0  # Default warehouse distance
+                    # else:
+                    #     # Distance from previous customer (use small default)
+                    #     distance_km = 2.0  # Default inter-customer distance
+                    #
+                    # travel_time_minutes = max(1, int(distance_km / 60 * 60))  # Simple calculation
+
+                    distance_km = route['interval_distance'][customer_id]
+                    travel_time_minutes = route['interval_time'][customer_id]
                     
                     row = {
                         '计划出库日期': '2025-06-30',  # Use the date from time windows
@@ -1277,7 +1281,7 @@ class OutputManager:
                         '预计送达时间': arrival_time_str,
                         '预计离开时间': departure_time_str,
                         '距离': round(distance_km, 3),
-                        '行驶时间': travel_time_minutes,
+                        '行驶时间': round(travel_time_minutes, 1),
                         '线路单边里程': round(total_route_distance, 3) if i == 1 else '',
                         '线路时间(单边)': round(total_route_time, 2) if i == 1 else '',
                         '线路方量': round(total_route_volume * 1000, 3) if i == 1 else '',  # Convert to liters
