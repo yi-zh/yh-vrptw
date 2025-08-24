@@ -13,7 +13,7 @@ class TabuSearchSolver(VRPTWSolver):
     """禁忌搜索算法求解VRPTW问题"""
 
     def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 1000,
-                 neighborhood_size: int = 50, aspiration_value: float = 0.1):
+                 neighborhood_size: int = 50, aspiration_value: float = 0.1, enable_penalty=False, penalty_coeff={}):
         super().__init__(problem)
         self.tabu_list = []  # 禁忌表
         self.tabu_size = tabu_size  # 禁忌表大小
@@ -23,8 +23,12 @@ class TabuSearchSolver(VRPTWSolver):
 
         self.best_solution = None
         self.best_cost = float('inf')
+        self.best_score = float('inf')
+        self.best_penalty = float('inf')
         self.current_solution = None
         self.current_cost = 0.0
+        self.enable_penalty = enable_penalty
+        self.penalty_coeff = penalty_coeff
 
     def solve(self) -> Dict[str, Any]:
         """实现禁忌搜索算法"""
@@ -38,8 +42,8 @@ class TabuSearchSolver(VRPTWSolver):
                 raise ValueError("无法生成初始解")
 
             self.best_solution = deepcopy(self.current_solution)
-            self.best_cost = self._calculate_solution_cost(self.current_solution)
-            self.current_cost = self.best_cost
+            self.best_score = self._calculate_solution_score(self.current_solution)
+            self.current_score = self.best_score
 
             # 2. 迭代搜索
             for iter in range(self.max_iter):
@@ -94,13 +98,9 @@ class TabuSearchSolver(VRPTWSolver):
 
         if savings_solution['status'] == 'solved':
             self.current_solution = savings_solution['routes']
+            self.best_cost = savings_solution['total_cost']
         else:
-            # 如果节约算法失败，使用简单的贪婪算法生成初始解
-            from main import GreedyVRPTWSolver
-            greedy_solver = GreedyVRPTWSolver(self.problem)
-            greedy_solution = greedy_solver.solve()
-            if greedy_solution['status'] == 'solved':
-                self.current_solution = greedy_solution['routes']
+            raise Exception("Saving algorithm fails. No available initial solution!")
 
     def _generate_neighborhood(self) -> List[List[Dict]]:
         """生成邻域解"""
@@ -389,9 +389,7 @@ class TabuSearchSolver(VRPTWSolver):
 
         return True
 
-    def _calculate_solution_cost(self, solution: List[Dict]) -> float:
-        """计算解的总成本"""
-        total_cost = 0.0
+    def _calculate_solution_score(self, solution: List[Dict], cost: float) -> float:
 
         for route in solution:
             vehicle = self._get_vehicle_by_id(route['vehicle'])
