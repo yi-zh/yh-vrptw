@@ -20,7 +20,7 @@ OVER_LOADING_90 = "over_loading_90"
 class TabuSearchSolver(VRPTWSolver):
     """禁忌搜索算法求解VRPTW问题"""
 
-    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 1000,
+    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 100,
                  neighborhood_size: int = 50, aspiration_value: float = 0.1, enable_penalty=False, penalty_coeff={}):
         super().__init__(problem)
         self.tabu_list = []  # 禁忌表
@@ -38,10 +38,11 @@ class TabuSearchSolver(VRPTWSolver):
         self.current_solution = None
         self.enable_penalty = enable_penalty
         self.penalty_coeff = penalty_coeff
+        self.print_details = True
 
     def solve(self) -> Dict[str, Any]:
         """实现禁忌搜索算法"""
-        logger.info("使用禁忌搜索算法求解VRPTW问题...")
+        logger.info("使用寻优算法求解VRPTW问题...")
 
         try:
             # 1. 生成初始解
@@ -57,11 +58,13 @@ class TabuSearchSolver(VRPTWSolver):
             for cus_id, customer in self.customer_map.items():
                 tw_end = self._parse_time(customer.time_window_end)
                 distance = self._calculate_distance(warehouse, customer)
-                travel_time = self._calculate_travel_time(distance)
+                # travel_time = self._calculate_travel_time(distance)
+                travel_time = self._calculate_travel_time(distance, warehouse, customer)
                 if travel_time > tw_end or travel_time > 60*3:
                     selected_route, index = self._find_route_containing(self.current_solution, cus_id)
                     excluded_routes.append(selected_route)
                     excluded_routes_indices.append(index)
+                    logger.info(f"剔除过远线路-客户{customer.name}：距离{distance}km, 用时{travel_time}min")
             explored_routes = [self.current_solution[i] for i in range(len(self.current_solution)) if i not in excluded_routes_indices]
             fixed_cost = sum([route['cost'] for route in excluded_routes])
             logger.info(f"{len(excluded_routes_indices)}条路径由于需要剔除距离过远的customer，因此被固定。剩余待搜索的路径数：{len(explored_routes)}")
@@ -84,6 +87,8 @@ class TabuSearchSolver(VRPTWSolver):
                 best_neighbor, best_neighbor_cost, best_neighbor_penalty = self._evaluate_neighborhood(neighborhood)
 
                 if not best_neighbor:
+                    if self.print_details:
+                        logger.info(f"迭代 {iter}: 未找到更优解，成本 {self.best_cost:.2f}")
                     continue  # 没有找到可行解
 
                 # 更新当前解
@@ -97,18 +102,18 @@ class TabuSearchSolver(VRPTWSolver):
                     if best_neighbor_cost < self.best_cost:
                         self.best_solution = deepcopy(best_neighbor)
                         self.best_cost = best_neighbor_cost
-                        logger.info(f"迭代 {iter}: 找到更优解，成本 {self.best_cost:.2f}")
-                    # else:
-                    #     logger.info(f"迭代 {iter}: 未找到更优解，成本 {self.best_cost:.2f}")
+                        logger.info(f"*迭代 {iter}: 找到更优解，成本 {self.best_cost:.2f}")
+                    elif self.print_details:
+                        logger.info(f"迭代 {iter}: 未找到更优解，成本 {self.best_cost:.2f}")
                 else:
                     if best_neighbor_cost + best_neighbor_penalty < self.best_score:
                         self.best_solution = deepcopy(best_neighbor)
                         self.best_score = best_neighbor_cost + best_neighbor_penalty
-                        logger.info(f"迭代 {iter}: 找到更优解，成本： {best_neighbor_cost:.2f},"
+                        logger.info(f"*迭代 {iter}: 找到更优解，成本： {best_neighbor_cost:.2f},"
                                     f" 惩罚值：{best_neighbor_penalty:.2f}")
-                    # else:
-                    #     logger.info(f"迭代 {iter}: 未找到更优解，成本： {best_neighbor_cost:.2f},"
-                    #                 f" 惩罚值：{best_neighbor_penalty:.2f}")
+                    elif self.print_details:
+                        logger.info(f"迭代 {iter}: 未找到更优解，成本： {best_neighbor_cost:.2f},"
+                                    f" 惩罚值：{best_neighbor_penalty:.2f}")
 
             self.best_solution = self.best_solution + excluded_routes
             self._calculate_interval_distance_and_time(self.best_solution)
@@ -161,11 +166,12 @@ class TabuSearchSolver(VRPTWSolver):
             customer = self.customer_map[cus_id]
             if i == 0:
                 distance = self._calculate_distance(self._get_warehouse_location(), customer)
+                route['interval_time'][cus_id] = self._calculate_travel_time(distance, self._get_warehouse_location(), customer)
             else:
                 prev_customer = self.customer_map[route['customers'][i-1]]
                 distance = self._calculate_distance(prev_customer, customer)
+                route['interval_time'][cus_id] = self._calculate_travel_time(distance, prev_customer, customer)
             route['interval_distance'][cus_id] = distance
-            route['interval_time'][cus_id] = self._calculate_travel_time(distance)
 
     def _calculate_interval_distance_and_time(self, routes):
         for route in routes:
@@ -423,7 +429,7 @@ class TabuSearchSolver(VRPTWSolver):
 
             # 计算到达时间
             distance = self._calculate_distance(current_loc, customer)
-            travel_time = self._calculate_travel_time(distance)
+            travel_time = self._calculate_travel_time(distance, current_loc, customer)
             arrival_time = current_time + travel_time
 
             # 考虑时间窗
@@ -454,7 +460,7 @@ class TabuSearchSolver(VRPTWSolver):
 
         # 返回仓库的时间
         distance = self._calculate_distance(current_loc, warehouse)
-        vehicle_work_end_time = current_time + self._calculate_travel_time(distance)
+        vehicle_work_end_time = current_time + self._calculate_travel_time(distance, current_loc, warehouse)
 
         suitable_vehicle = self.saving_solver._find_suitable_vehicle(total_weight, total_volume,
                                                                      route['height_restricted'])
@@ -638,6 +644,9 @@ class TabuSearchSolver(VRPTWSolver):
 
     def _calculate_travel_time(self, distance: float) -> float:
         return calculate_travel_time(distance)
+
+    def _calculate_travel_time(self, distance, loc1, loc2) -> float:
+        return calculate_travel_time(distance, loc1, loc2)
 
     def _get_service_time(self, customer: Customer) -> float:
         return get_service_time(customer)
