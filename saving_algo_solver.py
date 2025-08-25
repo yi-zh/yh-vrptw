@@ -26,90 +26,113 @@ VEHICLE_COST_MAP = {
 }
 
 _routes_matrix_cache = None
+_routes_matrix_42_cache = None
 _distance_cache = {}
 _travel_time_cache = {}
 
 def load_routes_matrix():
     """Load routes matrix from CSV file and cache it"""
-    global _routes_matrix_cache
+    global _routes_matrix_cache, _routes_matrix_42_cache
     
-    if _routes_matrix_cache is not None:
-        return _routes_matrix_cache
+    if _routes_matrix_cache is not None and _routes_matrix_42_cache is not None:
+        return _routes_matrix_cache, _routes_matrix_42_cache
+    
+    # Load regular routes matrix
+    regular_matrix = {}
+    matrix_42 = {}
     
     try:
+        # Load regular routes matrix
         routes_file = Path("csv_data/input/route_matrix.csv")
         if routes_file.exists():
-            print(f"Loading routes matrix from {routes_file.name}...")
-            
-            # Read the routes matrix CSV
-            df = pd.read_csv(routes_file, encoding='utf-8-sig')
-            
-            # Print column info for debugging
-            print(f"Routes matrix columns: {list(df.columns)}")
-            print(f"Routes matrix shape: {df.shape}")
-            
-            # Create a dictionary for fast lookup
-            # Assuming the CSV has columns like: origin_id, destination_id, distance_km, duration_minutes
-            # or similar variations
-            routes_dict = {}
-            
-            # Try to identify the correct column names
-            origin_col = None
-            dest_col = None
-            distance_col = None
-            duration_col = None
-            
-            for col in df.columns:
-                col_lower = col.lower()
-                if 'origin' in col_lower or 'from' in col_lower or 'start' in col_lower:
-                    origin_col = col
-                elif 'destination' in col_lower or 'dest' in col_lower:
-                    dest_col = col
-                elif 'distance' in col_lower or 'km' in col_lower or 'meter' in col_lower:
-                    distance_col = col
-                elif 'duration' in col_lower or 'time' in col_lower or 'minute' in col_lower:
-                    duration_col = col
-            
-            if origin_col and dest_col and (distance_col or duration_col):
-                print(f"Using columns: origin={origin_col}, dest={dest_col}, distance={distance_col}, duration={duration_col}")
-                
-                for _, row in df.iterrows():
-                    try:
-                        origin = str(row[origin_col]).strip()
-                        dest = str(row[dest_col]).strip()
-                        
-                        distance = float(row[distance_col]) if distance_col and pd.notna(row[distance_col]) else None
-                        duration = float(row[duration_col]) if duration_col and pd.notna(row[duration_col]) else None
-                        
-                        # Store both directions
-                        routes_dict[(origin, dest)] = {
-                            'distance': distance,
-                            'duration': duration
-                        }
-                        routes_dict[(dest, origin)] = {
-                            'distance': distance,
-                            'duration': duration
-                        }
-                        
-                    except (ValueError, KeyError) as e:
-                        continue
-                
-                _routes_matrix_cache = routes_dict
-                print(f"Loaded {len(routes_dict)} route entries from routes matrix")
-                return routes_dict
-            else:
-                print(f"Could not identify required columns in routes matrix")
-                print(f"Available columns: {list(df.columns)}")
-                
+            print(f"Loading regular routes matrix from {routes_file.name}...")
+            regular_matrix = _load_single_matrix(routes_file)
         else:
-            print(f"Routes matrix file not found: {routes_file}")
+            print(f"Regular routes matrix file not found: {routes_file}")
+            
+        # Load 4.2m vehicle routes matrix
+        routes_42_file = Path("csv_data/input/route_matrix_42.csv")
+        if routes_42_file.exists():
+            print(f"Loading 4.2m vehicle routes matrix from {routes_42_file.name}...")
+            matrix_42 = _load_single_matrix(routes_42_file)
+        else:
+            print(f"4.2m routes matrix file not found: {routes_42_file}")
+            # If 4.2m matrix doesn't exist, use regular matrix as fallback
+            matrix_42 = regular_matrix
             
     except Exception as e:
-        print(f"Error loading routes matrix: {e}")
+        print(f"Error loading routes matrices: {e}")
     
-    # Return empty dict if loading failed
-    _routes_matrix_cache = {}
-    return _routes_matrix_cache
+    # Cache the matrices
+    _routes_matrix_cache = regular_matrix
+    _routes_matrix_42_cache = matrix_42
+    
+    return regular_matrix, matrix_42
+
+def _load_single_matrix(file_path):
+    """Load a single routes matrix file"""
+    try:
+        # Read the routes matrix CSV
+        df = pd.read_csv(file_path, encoding='utf-8-sig')
+        
+        # Print column info for debugging
+        print(f"Routes matrix columns: {list(df.columns)}")
+        print(f"Routes matrix shape: {df.shape}")
+        
+        # Create a dictionary for fast lookup
+        routes_dict = {}
+        
+        # Try to identify the correct column names
+        origin_col = None
+        dest_col = None
+        distance_col = None
+        duration_col = None
+        
+        for col in df.columns:
+            col_lower = col.lower()
+            if 'origin' in col_lower or 'from' in col_lower or 'start' in col_lower:
+                origin_col = col
+            elif 'destination' in col_lower or 'dest' in col_lower:
+                dest_col = col
+            elif 'distance' in col_lower or 'km' in col_lower or 'meter' in col_lower:
+                distance_col = col
+            elif 'duration' in col_lower or 'time' in col_lower or 'minute' in col_lower:
+                duration_col = col
+        
+        if origin_col and dest_col and (distance_col or duration_col):
+            print(f"Using columns: origin={origin_col}, dest={dest_col}, distance={distance_col}, duration={duration_col}")
+            
+            for _, row in df.iterrows():
+                try:
+                    origin = str(row[origin_col]).strip()
+                    dest = str(row[dest_col]).strip()
+                    
+                    distance = float(row[distance_col]) if distance_col and pd.notna(row[distance_col]) else None
+                    duration = float(row[duration_col]) if duration_col and pd.notna(row[duration_col]) else None
+                    
+                    # Store both directions
+                    routes_dict[(origin, dest)] = {
+                        'distance': distance,
+                        'duration': duration
+                    }
+                    routes_dict[(dest, origin)] = {
+                        'distance': distance,
+                        'duration': duration
+                    }
+                    
+                except (ValueError, KeyError) as e:
+                    continue
+            
+            print(f"Loaded {len(routes_dict)} route entries from {file_path.name}")
+            return routes_dict
+        else:
+            print(f"Could not identify required columns in routes matrix")
+            print(f"Available columns: {list(df.columns)}")
+            
+    except Exception as e:
+        print(f"Error loading routes matrix from {file_path}: {e}")
+    
+    return {}
 
 def get_location_id(location) -> str:
     """Extract location ID from location object"""
@@ -122,7 +145,17 @@ def get_location_id(location) -> str:
     else:
         return str(location)
 
-def calculate_distance(loc1, loc2) -> float:
+def get_appropriate_matrix(vehicle_type=None):
+    """Get the appropriate routes matrix based on vehicle type"""
+    regular_matrix, matrix_42 = load_routes_matrix()
+    
+    # Use 4.2m matrix for 4.2m vehicles, regular matrix for others
+    if vehicle_type and "4.2" in str(vehicle_type):
+        return matrix_42
+    else:
+        return regular_matrix
+
+def calculate_distance(loc1, loc2, vehicle_type=None) -> float:
     """计算两个位置之间的距离（使用路线矩阵数据）"""
     global _distance_cache
     
@@ -130,20 +163,22 @@ def calculate_distance(loc1, loc2) -> float:
     loc1_id = get_location_id(loc1)
     loc2_id = get_location_id(loc2)
     
-    # Check cache first
-    cache_key = (','.join([str(loc1.longitude),str(loc1.latitude)]),','.join([str(loc2.longitude),str(loc2.latitude)]))
-    # cache_key = (loc1_id, loc2_id)
+    # Create cache key including vehicle type
+    cache_key = (','.join([str(loc1.longitude),str(loc1.latitude)]),','.join([str(loc2.longitude),str(loc2.latitude)]), str(vehicle_type) if vehicle_type else "default")
+    
     if cache_key in _distance_cache:
         return _distance_cache[cache_key]
     
-    # Load routes matrix if not already loaded
-    routes_matrix = load_routes_matrix()
+    # Get appropriate routes matrix based on vehicle type
+    routes_matrix = get_appropriate_matrix(vehicle_type)
+    
+    # Create lookup key for routes matrix
+    matrix_key = (','.join([str(loc1.longitude),str(loc1.latitude)]),','.join([str(loc2.longitude),str(loc2.latitude)]))
     
     # Try to find distance in routes matrix
-    if cache_key in routes_matrix and routes_matrix[cache_key]['distance'] is not None:
-        distance = routes_matrix[cache_key]['distance']
+    if matrix_key in routes_matrix and routes_matrix[matrix_key]['distance'] is not None:
+        distance = routes_matrix[matrix_key]['distance']
         _distance_cache[cache_key] = distance/1000.0
-        # logger.info(f"Distance between {loc1_id} and {loc2_id} found in routes matrix: {distance}")
         return distance/1000.0
     
     # Fallback to euclidean distance calculation
@@ -178,7 +213,7 @@ def calculate_distance(loc1, loc2) -> float:
         _distance_cache[cache_key] = default_distance
         return default_distance
 
-def calculate_travel_time(distance: float = None, loc1=None, loc2=None) -> float:
+def calculate_travel_time(distance: float = None, loc1=None, loc2=None, vehicle_type=None) -> float:
     """根据距离或路线矩阵计算旅行时间（分钟）"""
     global _travel_time_cache
     
@@ -187,26 +222,37 @@ def calculate_travel_time(distance: float = None, loc1=None, loc2=None) -> float
         loc1_id = get_location_id(loc1)
         loc2_id = get_location_id(loc2)
         
-        # Check cache first
-        # cache_key = (loc1_id, loc2_id)
+        # Create cache key including vehicle type
         cache_key = (
-        ','.join([str(loc1.longitude), str(loc1.latitude)]), ','.join([str(loc2.longitude), str(loc2.latitude)]))
+            ','.join([str(loc1.longitude), str(loc1.latitude)]), 
+            ','.join([str(loc2.longitude), str(loc2.latitude)]),
+            str(vehicle_type) if vehicle_type else "default"
+        )
 
         if cache_key in _travel_time_cache:
             return _travel_time_cache[cache_key]
         
-        # Load routes matrix if not already loaded
-        routes_matrix = load_routes_matrix()
+        # Get appropriate routes matrix based on vehicle type
+        routes_matrix = get_appropriate_matrix(vehicle_type)
+        
+        # Create lookup key for routes matrix
+        matrix_key = (
+            ','.join([str(loc1.longitude), str(loc1.latitude)]), 
+            ','.join([str(loc2.longitude), str(loc2.latitude)])
+        )
         
         # Try to find travel time in routes matrix
-        if cache_key in routes_matrix and routes_matrix[cache_key]['duration'] is not None:
-            travel_time = routes_matrix[cache_key]['duration']
+        if matrix_key in routes_matrix and routes_matrix[matrix_key]['duration'] is not None:
+            travel_time = routes_matrix[matrix_key]['duration']
             _travel_time_cache[cache_key] = travel_time/60.0
             return travel_time/60.0
-    
+
+    if distance == 0.0:
+        return 0.0
+
     # Fallback to distance-based calculation
     if distance is None and loc1 is not None and loc2 is not None:
-        distance = calculate_distance(loc1, loc2)
+        distance = calculate_distance(loc1, loc2, vehicle_type)
     
     if distance is not None:
         avg_speed = 40.0  # 平均速度，公里/小时
@@ -214,9 +260,11 @@ def calculate_travel_time(distance: float = None, loc1=None, loc2=None) -> float
         
         # Cache the result if we have location IDs
         if loc1 is not None and loc2 is not None:
-            loc1_id = get_location_id(loc1)
-            loc2_id = get_location_id(loc2)
-            cache_key = (loc1_id, loc2_id)
+            cache_key = (
+                ','.join([str(loc1.longitude), str(loc1.latitude)]), 
+                ','.join([str(loc2.longitude), str(loc2.latitude)]),
+                str(vehicle_type) if vehicle_type else "default"
+            )
             _travel_time_cache[cache_key] = travel_time
         
         return travel_time
@@ -434,9 +482,9 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             return_distance = calculate_distance(customer, warehouse)
 
             # 计算时间
-            travel_time = calculate_travel_time(to_customer)
+            travel_time = calculate_travel_time(to_customer, warehouse, customer)
             service_time = get_service_time(customer)
-            return_time = calculate_travel_time(return_distance)
+            return_time = calculate_travel_time(return_distance, customer, warehouse)
 
             # 时间窗处理
             tw_start = parse_time(customer.time_window_start)
@@ -595,7 +643,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         warehouse = self._get_warehouse_location()
         last_departure_i = route_i['departure_times'][i_id]
         travel_time_ij = calculate_travel_time(
-            calculate_distance(self.customer_map[i_id], self.customer_map[j_id])
+            calculate_distance(self.customer_map[i_id], self.customer_map[j_id]), self.customer_map[i_id], self.customer_map[j_id]
         )
         arrival_j = last_departure_i + travel_time_ij
 
@@ -612,7 +660,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         service_time_j = get_service_time(j_customer)
         departure_j = max(arrival_j, j_tw_start) + service_time_j
         return_time = calculate_travel_time(
-            calculate_distance(j_customer, warehouse)
+            calculate_distance(j_customer, warehouse), j_customer, warehouse
         )
 
         if departure_j + return_time > parse_time(suitable_vehicle.available_time_end):
@@ -653,7 +701,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         j_customer = self.customer_map[j_id]
 
         travel_time_ij = calculate_travel_time(
-            calculate_distance(i_customer, j_customer)
+            calculate_distance(i_customer, j_customer), i_customer, j_customer
         )
 
         new_arrival_j = new_departure_times[i_id] + travel_time_ij
@@ -664,7 +712,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         new_departure_times[j_id] = new_departure_j
 
         return_time = calculate_travel_time(
-            calculate_distance(j_customer, self._get_warehouse_location())
+            calculate_distance(j_customer, self._get_warehouse_location()), j_customer, self._get_warehouse_location()
         )
 
         return {
@@ -674,7 +722,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             'sequence': new_sequence,
             'total_distance': new_distance,
             'total_time': new_departure_j + calculate_travel_time(
-                calculate_distance(j_customer, self._get_warehouse_location())
+                calculate_distance(j_customer, self._get_warehouse_location()), j_customer, self._get_warehouse_location()
             ),
             'load_weight': new_weight,
             'load_volume': new_volume,
