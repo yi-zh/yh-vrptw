@@ -629,6 +629,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         suitable_vehicle = self._find_suitable_vehicle(total_weight, total_volume, height_restriction)
         if not suitable_vehicle:
             return False
+        suitable_vehicle_type = "4.2" if suitable_vehicle.vehicle_type== "4.2m厢式货车" else ""
 
         # 2. 检查时间窗约束
         # 获取i在路径i中的位置和j在路径j中的位置
@@ -640,17 +641,23 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             return False
 
         # 计算合并后的时间约束
-        warehouse = self._get_warehouse_location()
-        last_departure_i = route_i['departure_times'][i_id]
+        new_customers = route_i['customers'] + route_j['customers']
 
-        current_time = last_departure_i
-        current_loc = self.customer_map[i_id]
-        for cust_id in route_j['customers']:
+        current_loc = self.customer_map[new_customers[0]]
+        service_time = get_service_time(current_loc)
+
+        first_distance = calculate_distance(self._get_warehouse_location(), self.customer_map[new_customers[0]], suitable_vehicle_type)
+        first_travel_time = calculate_travel_time(first_distance, self._get_warehouse_location(), self.customer_map[new_customers[0]],
+                                                  suitable_vehicle_type)
+        tw_start = parse_time(current_loc.time_window_start)
+        work_start_time = tw_start - first_travel_time
+        current_time = tw_start + service_time
+        for cust_id in new_customers[1:]:
             customer = self.customer_map[cust_id]
 
             # 计算到达时间
-            distance = calculate_distance(current_loc, customer)
-            travel_time = calculate_travel_time(distance, current_loc, customer)
+            distance = calculate_distance(current_loc, customer, suitable_vehicle_type)
+            travel_time = calculate_travel_time(distance, current_loc, customer, suitable_vehicle_type)
             arrival_time = current_time + travel_time
 
             # 考虑时间窗
@@ -671,9 +678,8 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             current_loc = customer
 
         # 检查合并后返回仓库的时间是否在车辆可用时间内, 单司机工作时间不超过6小时
-        vehicle_work_start_time = route_i['vehicle_work_start_time']
 
-        if current_time - vehicle_work_start_time > 6 * 60:
+        if current_time - work_start_time > 6 * 60:
             return False
 
         return True
@@ -682,12 +688,6 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         """合并两条路径"""
         # 创建新路径序列（移除重复的仓库点）
         new_sequence = route_i['sequence'][:-1] + route_j['sequence'][1:]
-
-        # 计算新的距离和时间
-        new_distance = route_i['total_distance'] + route_j['total_distance'] - \
-                       calculate_distance(self.customer_map[i_id], self._get_warehouse_location()) - \
-                       calculate_distance(self._get_warehouse_location(), self.customer_map[j_id]) + \
-                       calculate_distance(self.customer_map[i_id], self.customer_map[j_id])
 
         # 合并装载信息
         new_weight = route_i['load_weight'] + route_j['load_weight']
@@ -699,58 +699,25 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         route_i['district'].update(route_j['district'])
         new_height_restricted = route_i['height_restricted'] or route_j['height_restricted']
 
-        # 计算新的到达和离开时间
-        new_arrival_times = {}
-        new_arrival_times[new_customers[0]] = route_i['arrival_times'][new_customers[0]]
-        new_departure_times = {}
-        new_departure_times[new_customers[0]] = route_i['departure_times'][new_customers[0]]
-
-        current_loc = self.customer_map[new_customers[0]]
-        current_time = route_i['departure_times'][current_loc.id]
-        for cust_id in new_customers[1:]:
-            customer = self.customer_map[cust_id]
-
-            # 计算到达时间
-            distance = calculate_distance(current_loc, customer)
-            travel_time = calculate_travel_time(distance, current_loc, customer)
-            arrival_time = current_time + travel_time
-
-            # 考虑时间窗
-            tw_start = parse_time(customer.time_window_start)
-            tw_end = parse_time(customer.time_window_end)
-            effective_arrival = max(arrival_time, tw_start)
-
-            new_arrival_times[customer.id] = effective_arrival
-
-            # 计算离开时间
-            service_time = get_service_time(customer)
-            departure_time = effective_arrival + service_time
-
-            new_departure_times[customer.id] = departure_time
-
-            # 更新
-            current_time = departure_time
-            current_loc = customer
-
         return {
             'vehicle_id': None,
             'vehicle_type': None,
             'customers': new_customers,
             'sequence': new_sequence,
-            'total_distance': new_distance,
-            'total_time': current_time - route_i['vehicle_work_start_time'],
+            'total_distance': None,
+            'total_time': None,
             'load_weight': new_weight,
             'load_volume': new_volume,
             # 多条不小于2个customer的如今合并时，需要更新后面的customer的时间数据
-            'arrival_times': new_arrival_times,
-            'departure_times': new_departure_times,
+            'arrival_times': {},
+            'departure_times': {},
             'district': route_i['district'],
             'specified_vehicle': None,
             'height_restricted': new_height_restricted,
             'breakpoint': None,
             'single_vehicle': False,
-            'vehicle_work_start_time': route_i['vehicle_work_start_time'],
-            'vehicle_work_end_time': current_time
+            'vehicle_work_start_time': None,
+            'vehicle_work_end_time': None
         }
 
     def _assign_vehicles_to_routes(self):
@@ -777,10 +744,60 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 route['vehicle_id'] = best_vehicle.id if best_vehicle is not None else appropriate_vehicle.id
                 route['vehicle_type'] = best_vehicle.vehicle_type if best_vehicle is not None else appropriate_vehicle.vehicle_type
                 selected_vehicles.add(route['vehicle_id'])
-                route['cost'] = self._calculate_transportation_cost(route)
-                self.total_cost += route['cost']
             else:
                 logger.warning(f"没有合适的车辆满足路径需求")
+                continue
+
+            vehicle_type = "4.2" if route['vehicle_type'] == "4.2m厢式货车" else ""
+            # 计算新的到达和离开时间
+            new_arrival_times = {}
+            new_departure_times = {}
+            total_distance = 0
+            new_customers = route['customers']
+            first_distance = calculate_distance(self._get_warehouse_location(), self.customer_map[new_customers[0]], vehicle_type)
+            total_distance += first_distance
+            first_travel_time = calculate_travel_time(first_distance, self._get_warehouse_location(), self.customer_map[new_customers[0]], vehicle_type)
+            new_arrival_times[new_customers[0]] = parse_time(self.customer_map[new_customers[0]].time_window_start)
+            start_work_time = new_arrival_times[new_customers[0]] - first_travel_time
+            first_service_time = get_service_time(self.customer_map[new_customers[0]])
+            new_departure_times[new_customers[0]] = new_arrival_times[new_customers[0]] + first_service_time
+
+            current_loc = self.customer_map[new_customers[0]]
+            current_time = new_departure_times[new_customers[0]]
+            for cust_id in new_customers[1:]:
+                customer = self.customer_map[cust_id]
+
+                # 计算到达时间
+                distance = calculate_distance(current_loc, customer, vehicle_type)
+                travel_time = calculate_travel_time(distance, current_loc, customer, vehicle_type)
+                total_distance += distance
+                arrival_time = current_time + travel_time
+
+                # 考虑时间窗
+                tw_start = parse_time(customer.time_window_start)
+                effective_arrival = max(arrival_time, tw_start)
+
+                new_arrival_times[customer.id] = effective_arrival
+
+                # 计算离开时间
+                service_time = get_service_time(customer)
+                departure_time = effective_arrival + service_time
+
+                new_departure_times[customer.id] = departure_time
+
+                # 更新
+                current_time = departure_time
+                current_loc = customer
+
+            work_end_time = current_time
+            route['total_distance'] = total_distance
+            route['total_time'] = work_end_time - start_work_time
+            route['arrival_times'] = new_arrival_times
+            route['departure_times'] = new_departure_times
+            route['vehicle_work_start_time'] = start_work_time
+            route['vehicle_work_end_time'] = work_end_time
+            route['cost'] = self._calculate_transportation_cost(route)
+            self.total_cost += route['cost']
 
     # 辅助方法
     def _get_warehouse_location(self) -> Location:

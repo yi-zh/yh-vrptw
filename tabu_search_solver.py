@@ -57,9 +57,9 @@ class TabuSearchSolver(VRPTWSolver):
             excluded_routes_indices = []
             for cus_id, customer in self.customer_map.items():
                 tw_end = self._parse_time(customer.time_window_end)
-                distance = self._calculate_distance(warehouse, customer)
+                distance = calculate_distance(warehouse, customer)
                 # travel_time = self._calculate_travel_time(distance)
-                travel_time = self._calculate_travel_time(distance, warehouse, customer)
+                travel_time = calculate_travel_time(distance, warehouse, customer)
                 if travel_time > tw_end or travel_time > 60*3:
                     selected_route, index = self._find_route_containing(self.current_solution, cus_id)
                     excluded_routes.append(selected_route)
@@ -161,16 +161,17 @@ class TabuSearchSolver(VRPTWSolver):
     def _calculate_interval_distance_and_time_per_route(self, route):
         route['interval_distance'] = {}
         route['interval_time'] = {}
+        vehicle_type = "4.2" if route['vehicle_type'] == "4.2m厢式货车" else ""
         for i in range(len(route['customers'])):
             cus_id = route['customers'][i]
             customer = self.customer_map[cus_id]
             if i == 0:
-                distance = self._calculate_distance(self._get_warehouse_location(), customer)
-                route['interval_time'][cus_id] = self._calculate_travel_time(distance, self._get_warehouse_location(), customer)
+                distance = calculate_distance(self._get_warehouse_location(), customer, vehicle_type)
+                route['interval_time'][cus_id] = calculate_travel_time(distance, self._get_warehouse_location(), customer, vehicle_type)
             else:
                 prev_customer = self.customer_map[route['customers'][i-1]]
-                distance = self._calculate_distance(prev_customer, customer)
-                route['interval_time'][cus_id] = self._calculate_travel_time(distance, prev_customer, customer)
+                distance = calculate_distance(prev_customer, customer, vehicle_type)
+                route['interval_time'][cus_id] = calculate_travel_time(distance, prev_customer, customer, vehicle_type)
             route['interval_distance'][cus_id] = distance
 
     def _calculate_interval_distance_and_time(self, routes):
@@ -389,14 +390,7 @@ class TabuSearchSolver(VRPTWSolver):
         # 重建序列
         route['sequence'] = [warehouse.id] + route['customers'] + [warehouse.id]
 
-        # 重新计算距离
-        total_distance = 0.0
-        for i in range(len(route['sequence']) - 1):
-            loc1 = self._get_location_by_id(route['sequence'][i])
-            loc2 = self._get_location_by_id(route['sequence'][i + 1])
-            total_distance += self._calculate_distance(loc1, loc2)
-
-        route['total_distance'] = total_distance
+        total_distance = 0
 
         # 重新计算装载信息
         total_weight = 0.0
@@ -410,16 +404,32 @@ class TabuSearchSolver(VRPTWSolver):
         route['load_weight'] = total_weight
         route['load_volume'] = total_volume
 
+        route['height_restricted'] = True in [self.customer_map[i].height_restricted for i in route['customers']]
+        suitable_vehicle = self.saving_solver._find_suitable_vehicle(total_weight, total_volume,
+                                                                     route['height_restricted'])
+        suitable_vehicle_type = "4.2" if suitable_vehicle.vehicle_type == "4.2m厢式货车" else ""
+        if not suitable_vehicle:
+            route['feasible'] = False
+            return
+
         # 重新计算时间信息
         arrival_times = {}
         departure_times = {}
         district = set()
-        current_time = 0
-        current_loc = warehouse
-
         customer_num = len(route['customers'])
-        first_customer_id = route['customers'][0]
-        route['height_restricted'] = False
+
+        current_loc = self.customer_map[route['customers'][0]]
+        service_time = get_service_time(current_loc)
+
+        first_distance = calculate_distance(self._get_warehouse_location(), self.customer_map[route['customers'][0]], suitable_vehicle_type)
+        total_distance += first_distance
+        first_travel_time = calculate_travel_time(first_distance, self._get_warehouse_location(), self.customer_map[route['customers'][0]],
+                                                  suitable_vehicle_type)
+        tw_start = parse_time(current_loc.time_window_start)
+        arrival_times[route['customers'][0]] = tw_start
+        work_start_time = tw_start - first_travel_time
+        current_time = tw_start + service_time
+        departure_times[route['customers'][0]] = current_time
 
         for cust_id in route['customers']:
             customer = self.customer_map[cust_id]
@@ -428,8 +438,9 @@ class TabuSearchSolver(VRPTWSolver):
                 return
 
             # 计算到达时间
-            distance = self._calculate_distance(current_loc, customer)
-            travel_time = self._calculate_travel_time(distance, current_loc, customer)
+            distance = calculate_distance(current_loc, customer, suitable_vehicle_type)
+            total_distance += distance
+            travel_time = calculate_travel_time(distance, current_loc, customer, suitable_vehicle_type)
             arrival_time = current_time + travel_time
 
             # 考虑时间窗
@@ -442,14 +453,10 @@ class TabuSearchSolver(VRPTWSolver):
                 route['feasible'] = False
                 return
 
-            if cust_id == first_customer_id:
-                vehicle_work_start_time = effective_arrival - travel_time
             district.add(extract_district(customer.address))
-            if customer.height_restricted:
-                route['height_restricted'] = True
 
             # 计算离开时间
-            service_time = self._get_service_time(customer)
+            service_time = get_service_time(customer)
             departure_time = effective_arrival + service_time
 
             # 更新
@@ -460,21 +467,16 @@ class TabuSearchSolver(VRPTWSolver):
 
         vehicle_work_end_time = current_time
 
-        suitable_vehicle = self.saving_solver._find_suitable_vehicle(total_weight, total_volume,
-                                                                     route['height_restricted'])
-        if not suitable_vehicle:
-            route['feasible'] = False
-            return
-
-        if vehicle_work_end_time - vehicle_work_start_time > 60 * 6:
+        if vehicle_work_end_time - work_start_time > 60 * 6:
             route['feasible'] = False
             return
 
         route['arrival_times'] = arrival_times
         route['departure_times'] = departure_times
-        route['total_time'] = vehicle_work_end_time - vehicle_work_start_time
+        route['total_time'] = vehicle_work_end_time - work_start_time
+        route['total_distance'] = total_distance
         route['district'] = district
-        route['vehicle_work_start_time'] = vehicle_work_start_time
+        route['vehicle_work_start_time'] = work_start_time
         route['vehicle_work_end_time'] = vehicle_work_end_time
         route['feasible'] = True
         route['vehicle_id'] = None
@@ -637,14 +639,14 @@ class TabuSearchSolver(VRPTWSolver):
     def _calculate_customer_load(self, customer: Customer) -> Dict[str, float]:
         return calculate_customer_load(customer, self.product_map)
 
-    def _calculate_distance(self, loc1, loc2) -> float:
-        return calculate_distance(loc1, loc2)
-
-    def _calculate_travel_time(self, distance: float) -> float:
-        return calculate_travel_time(distance)
-
-    def _calculate_travel_time(self, distance, loc1, loc2) -> float:
-        return calculate_travel_time(distance, loc1, loc2)
+    # def _calculate_distance(self, loc1, loc2) -> float:
+    #     return calculate_distance(loc1, loc2)
+    #
+    # def _calculate_travel_time(self, distance: float) -> float:
+    #     return calculate_travel_time(distance)
+    #
+    # def _calculate_travel_time(self, distance, loc1, loc2) -> float:
+    #     return calculate_travel_time(distance, loc1, loc2)
 
     def _get_service_time(self, customer: Customer) -> float:
         return get_service_time(customer)
