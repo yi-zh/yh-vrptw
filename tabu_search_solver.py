@@ -21,7 +21,7 @@ class TabuSearchSolver(VRPTWSolver):
     """禁忌搜索算法求解VRPTW问题"""
 
     def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 1000,
-                 neighborhood_size: int = 50, aspiration_value: float = 0.1, enable_penalty=False, penalty_coeff={}):
+                 neighborhood_size: int = 50, aspiration_value: float = 0.1, enable_penalty=True, penalty_coeff={}):
         super().__init__(problem)
         self.tabu_list = []  # 禁忌表
         self.tabu_size = tabu_size  # 禁忌表大小
@@ -88,7 +88,7 @@ class TabuSearchSolver(VRPTWSolver):
 
                 if not best_neighbor:
                     if self.print_details:
-                        logger.info(f"迭代 {iter}: 未找到更优解，成本 {self.best_cost:.2f}")
+                        logger.info(f"迭代 {iter}: 未找到更优解，成本 {self.best_cost:.2f}, 惩罚 {best_neighbor_penalty:.2f}")
                     continue  # 没有找到可行解
 
                 # 更新当前解

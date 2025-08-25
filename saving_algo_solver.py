@@ -665,9 +665,9 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             tw_end = parse_time(customer.time_window_end)
             effective_arrival = max(arrival_time, tw_start)
 
-            if effective_arrival > tw_end:
-                # 违反时间窗约束，标记为不可行
-                return False
+            # if effective_arrival > tw_end:
+            #     # 违反时间窗约束，标记为不可行
+            #     return False
 
             # 计算离开时间
             service_time = get_service_time(customer)
