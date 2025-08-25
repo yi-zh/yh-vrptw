@@ -8,6 +8,8 @@ from datetime import datetime
 import traceback
 import random
 from copy import deepcopy
+import pandas as pd
+from pathlib import Path
 
 # 继承已有数据类
 from main import Customer, Vehicle, Product, Location, VRPTWSolver, VRPTWProblem, logger, DataManager, OutputManager, \
@@ -22,6 +24,205 @@ VEHICLE_COST_MAP = {
     4: '81-100KM（元）',
     5: '100公里以上（元/KM）'
 }
+
+_routes_matrix_cache = None
+_distance_cache = {}
+_travel_time_cache = {}
+
+def load_routes_matrix():
+    """Load routes matrix from CSV file and cache it"""
+    global _routes_matrix_cache
+    
+    if _routes_matrix_cache is not None:
+        return _routes_matrix_cache
+    
+    try:
+        routes_file = Path("csv_data/input/route_matrix.csv")
+        if routes_file.exists():
+            print(f"Loading routes matrix from {routes_file.name}...")
+            
+            # Read the routes matrix CSV
+            df = pd.read_csv(routes_file, encoding='utf-8-sig')
+            
+            # Print column info for debugging
+            print(f"Routes matrix columns: {list(df.columns)}")
+            print(f"Routes matrix shape: {df.shape}")
+            
+            # Create a dictionary for fast lookup
+            # Assuming the CSV has columns like: origin_id, destination_id, distance_km, duration_minutes
+            # or similar variations
+            routes_dict = {}
+            
+            # Try to identify the correct column names
+            origin_col = None
+            dest_col = None
+            distance_col = None
+            duration_col = None
+            
+            for col in df.columns:
+                col_lower = col.lower()
+                if 'origin' in col_lower or 'from' in col_lower or 'start' in col_lower:
+                    origin_col = col
+                elif 'destination' in col_lower or 'dest' in col_lower:
+                    dest_col = col
+                elif 'distance' in col_lower or 'km' in col_lower or 'meter' in col_lower:
+                    distance_col = col
+                elif 'duration' in col_lower or 'time' in col_lower or 'minute' in col_lower:
+                    duration_col = col
+            
+            if origin_col and dest_col and (distance_col or duration_col):
+                print(f"Using columns: origin={origin_col}, dest={dest_col}, distance={distance_col}, duration={duration_col}")
+                
+                for _, row in df.iterrows():
+                    try:
+                        origin = str(row[origin_col]).strip()
+                        dest = str(row[dest_col]).strip()
+                        
+                        distance = float(row[distance_col]) if distance_col and pd.notna(row[distance_col]) else None
+                        duration = float(row[duration_col]) if duration_col and pd.notna(row[duration_col]) else None
+                        
+                        # Store both directions
+                        routes_dict[(origin, dest)] = {
+                            'distance': distance,
+                            'duration': duration
+                        }
+                        routes_dict[(dest, origin)] = {
+                            'distance': distance,
+                            'duration': duration
+                        }
+                        
+                    except (ValueError, KeyError) as e:
+                        continue
+                
+                _routes_matrix_cache = routes_dict
+                print(f"Loaded {len(routes_dict)} route entries from routes matrix")
+                return routes_dict
+            else:
+                print(f"Could not identify required columns in routes matrix")
+                print(f"Available columns: {list(df.columns)}")
+                
+        else:
+            print(f"Routes matrix file not found: {routes_file}")
+            
+    except Exception as e:
+        print(f"Error loading routes matrix: {e}")
+    
+    # Return empty dict if loading failed
+    _routes_matrix_cache = {}
+    return _routes_matrix_cache
+
+def get_location_id(location) -> str:
+    """Extract location ID from location object"""
+    if hasattr(location, 'id'):
+        return str(location.id)
+    elif hasattr(location, 'name'):
+        return str(location.name)
+    elif hasattr(location, 'sub_customer_code'):
+        return str(location.sub_customer_code)
+    else:
+        return str(location)
+
+def calculate_distance(loc1, loc2) -> float:
+    """计算两个位置之间的距离（使用路线矩阵数据）"""
+    global _distance_cache
+    
+    # Get location IDs
+    loc1_id = get_location_id(loc1)
+    loc2_id = get_location_id(loc2)
+    
+    # Check cache first
+    cache_key = (','.join([str(loc1.longitude),str(loc1.latitude)]),','.join([str(loc2.longitude),str(loc2.latitude)]))
+    # cache_key = (loc1_id, loc2_id)
+    if cache_key in _distance_cache:
+        return _distance_cache[cache_key]
+    
+    # Load routes matrix if not already loaded
+    routes_matrix = load_routes_matrix()
+    
+    # Try to find distance in routes matrix
+    if cache_key in routes_matrix and routes_matrix[cache_key]['distance'] is not None:
+        distance = routes_matrix[cache_key]['distance']
+        _distance_cache[cache_key] = distance/1000.0
+        # logger.info(f"Distance between {loc1_id} and {loc2_id} found in routes matrix: {distance}")
+        return distance/1000.0
+    
+    # Fallback to euclidean distance calculation
+    try:
+        if hasattr(loc1, 'latitude') and hasattr(loc1, 'longitude') and \
+           hasattr(loc2, 'latitude') and hasattr(loc2, 'longitude'):
+            # Use Haversine formula for more accurate distance calculation
+            lat1, lon1 = float(loc1.latitude), float(loc1.longitude)
+            lat2, lon2 = float(loc2.latitude), float(loc2.longitude)
+            
+            # Convert to radians
+            lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+            
+            # Haversine formula
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+            c = 2 * math.asin(math.sqrt(a))
+            r = 6371  # Earth's radius in kilometers
+            distance = c * r/1000.0
+        else:
+            # Simple euclidean distance as last resort
+            distance = math.hypot(loc1.longitude - loc2.longitude, loc1.latitude - loc2.latitude) * 100
+        
+        _distance_cache[cache_key] = distance
+        return distance
+        
+    except Exception as e:
+        print(f"Error calculating distance between {loc1_id} and {loc2_id}: {e}")
+        # Return a default distance
+        default_distance = 5.0
+        _distance_cache[cache_key] = default_distance
+        return default_distance
+
+def calculate_travel_time(distance: float = None, loc1=None, loc2=None) -> float:
+    """根据距离或路线矩阵计算旅行时间（分钟）"""
+    global _travel_time_cache
+    
+    # If locations are provided, try to use routes matrix first
+    if loc1 is not None and loc2 is not None:
+        loc1_id = get_location_id(loc1)
+        loc2_id = get_location_id(loc2)
+        
+        # Check cache first
+        # cache_key = (loc1_id, loc2_id)
+        cache_key = (
+        ','.join([str(loc1.longitude), str(loc1.latitude)]), ','.join([str(loc2.longitude), str(loc2.latitude)]))
+
+        if cache_key in _travel_time_cache:
+            return _travel_time_cache[cache_key]
+        
+        # Load routes matrix if not already loaded
+        routes_matrix = load_routes_matrix()
+        
+        # Try to find travel time in routes matrix
+        if cache_key in routes_matrix and routes_matrix[cache_key]['duration'] is not None:
+            travel_time = routes_matrix[cache_key]['duration']
+            _travel_time_cache[cache_key] = travel_time/60.0
+            return travel_time/60.0
+    
+    # Fallback to distance-based calculation
+    if distance is None and loc1 is not None and loc2 is not None:
+        distance = calculate_distance(loc1, loc2)
+    
+    if distance is not None:
+        avg_speed = 40.0  # 平均速度，公里/小时
+        travel_time = (distance / avg_speed) * 60  # 转换为分钟
+        
+        # Cache the result if we have location IDs
+        if loc1 is not None and loc2 is not None:
+            loc1_id = get_location_id(loc1)
+            loc2_id = get_location_id(loc2)
+            cache_key = (loc1_id, loc2_id)
+            _travel_time_cache[cache_key] = travel_time
+        
+        return travel_time
+    
+    # Default travel time if all else fails
+    return 30.0  # 30 minutes default
 
 def extract_district(address: str) -> str:
     """
@@ -58,17 +259,17 @@ def get_service_time(customer: Customer) -> float:
     #     raise ValueError(f"Order {customer.id} 的交接方式错误。its way is {customer.delivery_method}")
 
 
-def calculate_distance(loc1, loc2) -> float:
-    """计算两个位置之间的距离（使用已有方法或实现）"""
-    # 这里可以使用实际的距离计算方法
-    # 示例使用欧氏距离
-    return math.hypot(loc1.longitude - loc2.longitude, loc1.latitude - loc2.latitude) * 100  # 简单转换为公里
+# def calculate_distance(loc1, loc2) -> float:
+#     """计算两个位置之间的距离（使用已有方法或实现）"""
+#     # 这里可以使用实际的距离计算方法
+#     # 示例使用欧氏距离
+#     return math.hypot(loc1.longitude - loc2.longitude, loc1.latitude - loc2.latitude) * 100  # 简单转换为公里
 
 
-def calculate_travel_time(distance: float) -> float:
-    """根据距离计算旅行时间（分钟）"""
-    avg_speed = 40.0  # 平均速度，公里/小时
-    return (distance / avg_speed) * 60  # 转换为分钟
+# def calculate_travel_time(distance: float) -> float:
+#     """根据距离计算旅行时间（分钟）"""
+#     avg_speed = 40.0  # 平均速度，公里/小时
+#     return (distance / avg_speed) * 60  # 转换为分钟
 
 
 def parse_time(time_str: str) -> float:
@@ -157,7 +358,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
 
     def solve(self) -> Dict[str, Any]:
         """实现带时间窗的节约算法"""
-        logger.info("使用带时间窗的节约算法求解VRPTW问题...")
+        logger.info("搜索VRPTW问题初始解...")
 
         try:
             self._establish_info_map()

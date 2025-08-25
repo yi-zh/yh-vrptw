@@ -383,7 +383,7 @@ class DataManager:
                 merged_customers.append(merged_customer)
         
         # Replace customer list with merged customers
-        self.customers = merged_customers
+        # self.customers = merged_customers
         
         # Calculate statistics
         customers_with_demands = sum(1 for c in self.customers if c.demand)
