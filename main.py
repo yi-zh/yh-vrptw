@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 import json
 import logging
 import math
+import re
 
 # Configure logging
 # 创建日志格式化器，定义不同级别日志的颜色
@@ -520,7 +521,10 @@ class DataManager:
             try:
                 df = pd.read_csv(csv_file, encoding='utf-8-sig')
                 logger.info(f"Loading products from {csv_file.name}")
-                
+                df['vol'] = (df['长cm'].fillna(0) *
+                              df['宽cm'].fillna(0) *
+                              df['高cm'].fillna(0))
+
                 for _, row in df.iterrows():
                     try:
                         product_id = str(row['商品编码'])
@@ -529,15 +533,61 @@ class DataManager:
                         
                         # Calculate volume per unit
                         volume_per_unit = 0.0
+                        vol1 = row['vol']/1000
+                        vol2 = 0
+                        if unit == "KG":
+                            vol2 = float(row['计算规则（L/kg)']) if pd.notna(row['计算规则（L/kg)']) else 0
+                        vol3 = float(row['规则体积推算L']) if pd.notna(row['规则体积推算L']) else 0
+                        vol4 = float(row['规格体积L']) if pd.notna(row['规格体积L']) else 0
+
                         if product_id in volume_corrections:
                             volume_per_unit = volume_corrections[product_id]
-                        elif pd.notna(row['规格体积L']):
-                            volume_per_unit = float(row['规格体积L'])
-                        elif pd.notna(row['计算规则（L/kg)']):
-                            volume_per_unit = float(row['计算规则（L/kg)'])
-                        
+                        # elif C:
+                        #     volume_per_unit = float(row['规格体积L'])
+                        # elif pd.notna(row['计算规则（L/kg)']):
+                        #     volume_per_unit = float(row['计算规则（L/kg)'])
+                        else:
+                            volume_per_unit = max(vol1, vol2, vol3, vol4)
+
+                        if volume_per_unit == 0: logger.warning(f"Volume for product {product_id} not found")
                         # Estimate weight per unit (placeholder - could be improved)
-                        weight_per_unit = volume_per_unit * 0.8 if volume_per_unit > 0 else 1.0
+                        if unit == "KG":
+                            weight_per_unit = 1.0
+                        else:
+                            pattern1 = r'(\d+(?:\.\d+)?)(?=\s*(?:kg|千克))'
+                            pattern2 = r'(\d+)(?=\s*(?:g|克))'
+                            pattern3 = r'(\d+)(?=\s*(?:ml))'
+                            pattern4 = r'(\d+(?:\.\d+)?)(?=\s*(?:L))'
+                            match = re.search(pattern1, row['商品名称'], re.IGNORECASE)
+                            if match:
+                                weight_per_unit = float(match.group(1))
+                                match = re.search(r'kg\*([0-9]+)', row['商品名称'], re.IGNORECASE)
+                                if match:
+                                    weight_per_unit = weight_per_unit * int(match.group(1))
+                            else:
+                                match = re.search(pattern2, row['商品名称'], re.IGNORECASE)
+                                if match:
+                                    weight_per_unit = float(match.group(1))/1000
+                                    match = re.search(r'g\*([0-9]+)', row['商品名称'], re.IGNORECASE)
+                                    if match:
+                                        weight_per_unit = weight_per_unit * int(match.group(1))
+                                else:
+                                    match = re.search(pattern3, row['商品名称'], re.IGNORECASE)
+                                    if match:
+                                        weight_per_unit = float(match.group(1)) / 1000
+                                        match = re.search(r'ml\*([0-9]+)', row['商品名称'], re.IGNORECASE)
+                                        if match:
+                                            weight_per_unit = weight_per_unit * int(match.group(1))
+                                    else:
+                                        match = re.search(pattern4, row['商品名称'], re.IGNORECASE)
+                                        if match:
+                                            weight_per_unit = float(match.group(1))
+                                            match = re.search(r'L\*([0-9]+)', row['商品名称'], re.IGNORECASE)
+                                            if match:
+                                                weight_per_unit = weight_per_unit * int(match.group(1))
+                                        else:
+                                            weight_per_unit = 1.0
+                            if weight_per_unit > 100: logger.warning(f"Weights/unit for product {product_id} >= 100")
                         
                         if product_id not in products_dict:
                             product = Product(
