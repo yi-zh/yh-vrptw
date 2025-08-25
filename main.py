@@ -147,7 +147,7 @@ class DataManager:
         csv_files = list(self.input_dir.glob("*需排线销售订单*.csv")) or list(self.input_dir.glob("*customer*.csv"))
         
         # Also load time windows from separate file
-        time_window_files = list(self.input_dir.glob("*需排线销售订单带计划发货时间*.csv"))
+        time_window_files = list(self.input_dir.glob("*需排线销售订单*.csv"))
         time_windows = {}
         
         # Load order details for demands
@@ -231,8 +231,8 @@ class DataManager:
                 for _, row in df.iterrows():
                     order_id = str(row['销售订单'])
                     time_windows[order_id] = {
-                        'start': str(row['计划收货开始时间']),
-                        'end': str(row['计划收货结束时间'])
+                        'start': str(row['期望送达时间开始']),
+                        'end': str(row['期望送达时间结束'])
                     }
             except Exception as e:
                 logger.warning(f"Could not load time windows from {csv_file}: {e}")
