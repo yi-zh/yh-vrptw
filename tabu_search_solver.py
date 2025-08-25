@@ -458,9 +458,7 @@ class TabuSearchSolver(VRPTWSolver):
             current_time = departure_time
             current_loc = customer
 
-        # 返回仓库的时间
-        distance = self._calculate_distance(current_loc, warehouse)
-        vehicle_work_end_time = current_time + self._calculate_travel_time(distance, current_loc, warehouse)
+        vehicle_work_end_time = current_time
 
         suitable_vehicle = self.saving_solver._find_suitable_vehicle(total_weight, total_volume,
                                                                      route['height_restricted'])

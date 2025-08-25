@@ -461,7 +461,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 'breakpoint': None,
                 'single_vehicle': customer.delivery_type == "单点配送",
                 "vehicle_work_start_time": arrival_time - travel_time,
-                "vehicle_work_end_time": departure_time + return_time,
+                "vehicle_work_end_time": departure_time,
             }
 
             if self.is_split and load['volume'] > self.max_volume_one_vehicle:
@@ -594,31 +594,38 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         # 计算合并后的时间约束
         warehouse = self._get_warehouse_location()
         last_departure_i = route_i['departure_times'][i_id]
-        travel_time_ij = calculate_travel_time(
-            calculate_distance(self.customer_map[i_id], self.customer_map[j_id])
-        )
-        arrival_j = last_departure_i + travel_time_ij
 
-        # 检查是否满足j的时间窗
-        j_customer = self.customer_map[j_id]
-        j_tw_start = parse_time(j_customer.time_window_start)
-        j_tw_end = parse_time(j_customer.time_window_end)
+        current_time = last_departure_i
+        current_loc = self.customer_map[i_id]
+        for cust_id in route_j['customers']:
+            customer = self.customer_map[cust_id]
 
-        if arrival_j > j_tw_end:  # 到达时间晚于时间窗结束
-            return False
+            # 计算到达时间
+            distance = calculate_distance(current_loc, customer)
+            travel_time = calculate_travel_time(distance, current_loc, customer)
+            arrival_time = current_time + travel_time
+
+            # 考虑时间窗
+            tw_start = parse_time(customer.time_window_start)
+            tw_end = parse_time(customer.time_window_end)
+            effective_arrival = max(arrival_time, tw_start)
+
+            if effective_arrival > tw_end:
+                # 违反时间窗约束，标记为不可行
+                return False
+
+            # 计算离开时间
+            service_time = get_service_time(customer)
+            departure_time = effective_arrival + service_time
+
+            # 更新
+            current_time = departure_time
+            current_loc = customer
 
         # 检查合并后返回仓库的时间是否在车辆可用时间内, 单司机工作时间不超过6小时
         vehicle_work_start_time = route_i['vehicle_work_start_time']
-        service_time_j = get_service_time(j_customer)
-        departure_j = max(arrival_j, j_tw_start) + service_time_j
-        return_time = calculate_travel_time(
-            calculate_distance(j_customer, warehouse)
-        )
 
-        if departure_j + return_time > parse_time(suitable_vehicle.available_time_end):
-            return False
-
-        if departure_j + return_time - vehicle_work_start_time > 6 * 60:
+        if current_time - vehicle_work_start_time > 6 * 60:
             return False
 
         return True
@@ -645,27 +652,37 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         new_height_restricted = route_i['height_restricted'] or route_j['height_restricted']
 
         # 计算新的到达和离开时间
-        new_arrival_times = {**route_i['arrival_times'], **route_j['arrival_times']}
-        new_departure_times = {**route_i['departure_times'], **route_j['departure_times']}
+        new_arrival_times = {}
+        new_arrival_times[new_customers[0]] = route_i['arrival_times'][new_customers[0]]
+        new_departure_times = {}
+        new_departure_times[new_customers[0]] = route_i['departure_times'][new_customers[0]]
 
-        # 更新j的到达时间
-        i_customer = self.customer_map[i_id]
-        j_customer = self.customer_map[j_id]
+        current_loc = self.customer_map[new_customers[0]]
+        current_time = route_i['departure_times'][current_loc.id]
+        for cust_id in new_customers[1:]:
+            customer = self.customer_map[cust_id]
 
-        travel_time_ij = calculate_travel_time(
-            calculate_distance(i_customer, j_customer)
-        )
+            # 计算到达时间
+            distance = calculate_distance(current_loc, customer)
+            travel_time = calculate_travel_time(distance, current_loc, customer)
+            arrival_time = current_time + travel_time
 
-        new_arrival_j = new_departure_times[i_id] + travel_time_ij
-        new_departure_j = max(new_arrival_j, parse_time(j_customer.time_window_start)) + \
-                          get_service_time(j_customer)
+            # 考虑时间窗
+            tw_start = parse_time(customer.time_window_start)
+            tw_end = parse_time(customer.time_window_end)
+            effective_arrival = max(arrival_time, tw_start)
 
-        new_arrival_times[j_id] = new_arrival_j
-        new_departure_times[j_id] = new_departure_j
+            new_arrival_times[customer.id] = effective_arrival
 
-        return_time = calculate_travel_time(
-            calculate_distance(j_customer, self._get_warehouse_location())
-        )
+            # 计算离开时间
+            service_time = get_service_time(customer)
+            departure_time = effective_arrival + service_time
+
+            new_departure_times[customer.id] = departure_time
+
+            # 更新
+            current_time = departure_time
+            current_loc = customer
 
         return {
             'vehicle_id': None,
@@ -673,9 +690,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             'customers': new_customers,
             'sequence': new_sequence,
             'total_distance': new_distance,
-            'total_time': new_departure_j + calculate_travel_time(
-                calculate_distance(j_customer, self._get_warehouse_location())
-            ),
+            'total_time': current_time - route_i['vehicle_work_start_time'],
             'load_weight': new_weight,
             'load_volume': new_volume,
             # 多条不小于2个customer的如今合并时，需要更新后面的customer的时间数据
@@ -687,7 +702,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             'breakpoint': None,
             'single_vehicle': False,
             'vehicle_work_start_time': route_i['vehicle_work_start_time'],
-            'vehicle_work_end_time': new_departure_j + return_time
+            'vehicle_work_end_time': current_time
         }
 
     def _assign_vehicles_to_routes(self):
