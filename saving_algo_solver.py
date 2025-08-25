@@ -726,6 +726,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         for route in self.routes:
             # 找到能满足该路径需求的最合适车辆
             best_vehicle = None
+            route['time_slack'] = 0
             appropriate_vehicle = None
             for vehicle in self.problem.data_manager.vehicles:
                 if vehicle.id in selected_vehicles:
@@ -776,6 +777,10 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 # 考虑时间窗
                 tw_start = parse_time(customer.time_window_start)
                 effective_arrival = max(arrival_time, tw_start)
+                tw_end = parse_time(customer.time_window_end)
+
+                if effective_arrival > tw_end:
+                    route['time_slack'] = effective_arrival - tw_end
 
                 new_arrival_times[customer.id] = effective_arrival
 

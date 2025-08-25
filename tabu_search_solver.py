@@ -83,6 +83,7 @@ class TabuSearchSolver(VRPTWSolver):
             for iter in range(self.max_iter):
                 # 生成邻域解
                 neighborhood = self._generate_neighborhood()
+                neighborhood.append(deepcopy(self.current_solution))
 
                 # 评估邻域解
                 best_neighbor, best_neighbor_cost, best_neighbor_penalty = self._evaluate_neighborhood(neighborhood)
@@ -504,7 +505,7 @@ class TabuSearchSolver(VRPTWSolver):
             return None, float('inf'), float('inf')
 
         # todo 可以设置不同的排序方式
-        evaluated.sort(key=lambda x: (x[1][0] + x[1][1]))
+        evaluated.sort(key=lambda x: (x[1][1], x[1][0]))
 
         # 检查禁忌表和愿望准则
         for solution, value in evaluated:
@@ -699,7 +700,7 @@ class VRPTWMain:
                 ACROSS_DISTRICTS: 10,
                 OVER_LOADING_85: 5,
                 OVER_LOADING_90: 10,
-                TIME_SLACK: 0.1
+                TIME_SLACK: 10
             }
             solver = TabuSearchSolver(self.problem, enable_penalty=True, penalty_coeff=penalty_coeff)
             solution = solver.solve()
