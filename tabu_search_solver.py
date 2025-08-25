@@ -15,6 +15,7 @@ from saving_algo_solver import SavingsAlgorithmSolver, calculate_distance, calcu
 ACROSS_DISTRICTS = "acrosss_districts"
 OVER_LOADING_85 = "over_loading_85"
 OVER_LOADING_90 = "over_loading_90"
+TIME_SLACK = 'time_slack'
 
 
 class TabuSearchSolver(VRPTWSolver):
@@ -193,11 +194,13 @@ class TabuSearchSolver(VRPTWSolver):
         penalty_value = {
             ACROSS_DISTRICTS: 0,
             OVER_LOADING_85: 0,
-            OVER_LOADING_90: 0
+            OVER_LOADING_90: 0,
+            TIME_SLACK: 0
         }
         for route in routes:
             if len(route['district']) >= 4:
                 penalty_value[ACROSS_DISTRICTS] += 1
+            penalty_value[TIME_SLACK] += route.get('time_slack', 0)
             vehicle_volume_capacity = self.vehicle_map[route['vehicle_id']].capacity_volume
             load_ratio = route['load_volume'] / vehicle_volume_capacity
             if 0.85 < load_ratio <= 0.9:
@@ -386,6 +389,7 @@ class TabuSearchSolver(VRPTWSolver):
     def _recompute_route(self, route: Dict):
         """重新计算路径的距离、时间和装载信息"""
         warehouse = self._get_warehouse_location()
+        route['time_slack'] = 0
 
         # 重建序列
         route['sequence'] = [warehouse.id] + route['customers'] + [warehouse.id]
@@ -450,8 +454,7 @@ class TabuSearchSolver(VRPTWSolver):
 
             if effective_arrival > tw_end:
                 # 违反时间窗约束，标记为不可行
-                route['feasible'] = False
-                return
+                route['time_slack'] += effective_arrival - tw_end
 
             district.add(extract_district(customer.address))
 
@@ -501,7 +504,7 @@ class TabuSearchSolver(VRPTWSolver):
             return None, float('inf'), float('inf')
 
         # todo 可以设置不同的排序方式
-        evaluated.sort(key=lambda x: (x[1][0], x[1][1]))
+        evaluated.sort(key=lambda x: (x[1][0] + x[1][1]))
 
         # 检查禁忌表和愿望准则
         for solution, value in evaluated:
@@ -695,7 +698,8 @@ class VRPTWMain:
             penalty_coeff = {
                 ACROSS_DISTRICTS: 10,
                 OVER_LOADING_85: 5,
-                OVER_LOADING_90: 10
+                OVER_LOADING_90: 10,
+                TIME_SLACK: 0.1
             }
             solver = TabuSearchSolver(self.problem, enable_penalty=True, penalty_coeff=penalty_coeff)
             solution = solver.solve()
