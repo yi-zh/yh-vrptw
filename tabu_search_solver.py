@@ -22,7 +22,7 @@ TIME_SLACK = 'time_slack'
 class TabuSearchSolver(VRPTWSolver):
     """禁忌搜索算法求解VRPTW问题"""
 
-    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 100,
+    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 10,
                  neighborhood_size: int = 50, aspiration_value: float = 0.1, enable_penalty=True, penalty_coeff={}):
         super().__init__(problem)
         self.tabu_list = []  # 禁忌表

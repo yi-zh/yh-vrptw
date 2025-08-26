@@ -405,6 +405,8 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         self.is_split = is_split
         self.num_violate_route = 0
         self.max_violate_ratio = 0.1
+        self.unassigned = False
+        self.merge_iter = 0
 
     def solve(self) -> Dict[str, Any]:
         """实现带时间窗的节约算法"""
@@ -417,15 +419,27 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             # 1. 初始化：为每个客户创建单独路径
             self._initialize_routes()
 
-            # 2. 计算所有客户对之间的节约量
-            # 同一个主客户下的不同子客户由于地址相同，讲道理在saving的时候就应该放在一条车线上了
-            self._calculate_savings()
+            pre_num_routes = len(self.routes)
+            while (self.merge_iter < 10):
+                self.unassigned = False
+                self.merge_iter += 1
+                # 2. 计算所有客户对之间的节约量
+                # 同一个主客户下的不同子客户由于地址相同，讲道理在saving的时候就应该放在一条车线上了
+                self._calculate_savings()
 
-            # 3. 按节约量排序
-            self._sort_savings()
+                # 3. 按节约量排序
+                self._sort_savings()
 
-            # 4. 合并路径
-            self._merge_routes()
+                # 4. 合并路径
+                self._merge_routes()
+
+                # if not self.unassigned:
+                #     break
+                if len(self.routes) >= pre_num_routes:
+                    break
+
+                pre_num_routes = len(self.routes)
+
             num_violate_routes = 0
             for route in self.routes:
                 if route.get('time_slack', 0.0) > 0:
@@ -560,7 +574,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         self.customer_map[cus_id] = virtual_customer
 
     def _calculate_savings(self):
-        """计算所有客户对之间的节约量"""
+        """计算所有客户对之间的节约量，考虑时间窗兼容性"""
         warehouse = self._get_warehouse_location()
 
         for i, customer_i in enumerate(self.problem.data_manager.customers):
@@ -572,20 +586,92 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 if i >= j:
                     continue  # 避免重复计算
 
-                c0i = calculate_distance(customer_i, warehouse)
+                # 传统距离节约量计算
+                c0i = 0 #calculate_distance(customer_i, warehouse)
                 cj0 = calculate_distance(warehouse, customer_j)
                 cij = calculate_distance(customer_i, customer_j)
+                distance_saving = c0i + cj0 - cij
 
-                saving = c0i + cj0 - cij
+                # 时间窗兼容性计算
+                tw_i_start = parse_time(customer_i.time_window_start)
+                tw_i_end = parse_time(customer_i.time_window_end)
+                tw_j_start = parse_time(customer_j.time_window_start)
+                tw_j_end = parse_time(customer_j.time_window_end)
+                
+                # 计算时间窗重叠度和兼容性
+                time_window_compatibility = self._calculate_time_window_compatibility(
+                    tw_i_start, tw_i_end, tw_j_start, tw_j_end
+                )
+                
+                # 综合节约量：距离节约 + 时间窗兼容性奖励
+                # if self.merge_iter <= 3:
+                total_saving = distance_saving + time_window_compatibility*10 #max(0.0, time_window_compatibility * (self.merge_iter-2)*100)  # 时间窗权重可调整
+                # else:
+                #     total_saving = distance_saving
+                self.savings.append({
+                    'i': customer_i.id,
+                    'j': customer_j.id,
+                    'saving': total_saving,
+                    'distance_saving': distance_saving,
+                    'time_compatibility': time_window_compatibility,
+                    'index_i': i,
+                    'index_j': j
+                })
+                # if total_saving > 0:  # 只保留正的节约量
+                #     self.savings.append({
+                #         'i': customer_i.id,
+                #         'j': customer_j.id,
+                #         'saving': total_saving,
+                #         'distance_saving': distance_saving,
+                #         'time_compatibility': time_window_compatibility,
+                #         'index_i': i,
+                #         'index_j': j
+                #     })
 
-                if saving > 0:  # 只保留正的节约量
-                    self.savings.append({
-                        'i': customer_i.id,
-                        'j': customer_j.id,
-                        'saving': saving,
-                        'index_i': i,
-                        'index_j': j
-                    })
+    def _calculate_time_window_compatibility(self, tw_i_start: float, tw_i_end: float, 
+                                           tw_j_start: float, tw_j_end: float) -> float:
+        """计算两个客户时间窗的兼容性得分"""
+        
+        # 方法1：时间窗重叠度
+        overlap_start = max(tw_i_start, tw_j_start)
+        overlap_end = min(tw_i_end, tw_j_end)
+        overlap_duration = max(0, overlap_end - overlap_start)
+        
+        # 计算各自时间窗长度
+        tw_i_duration = tw_i_end - tw_i_start
+        tw_j_duration = tw_j_end - tw_j_start
+        avg_duration = (tw_i_duration + tw_j_duration) / 2
+        
+        # 重叠度得分 (0-1)
+        overlap_score = overlap_duration / avg_duration if avg_duration > 0 else 0
+        
+        # 方法2：时间窗距离惩罚
+        if overlap_duration > 0:
+            # 有重叠，给予奖励
+            distance_penalty = 0
+        else:
+            # 无重叠，计算时间窗间距离
+            if tw_i_end < tw_j_start:
+                gap = tw_j_start - tw_i_end
+            elif tw_j_end < tw_i_start:
+                gap = tw_i_start - tw_j_end
+            else:
+                gap = 0
+            
+            # 时间间隔惩罚 (间隔越大，惩罚越大)
+            distance_penalty = - gap / 60.0  # 转换为小时并作为负数惩罚
+        
+        # 方法3：时间窗顺序奖励
+        sequence_bonus = 0
+        if tw_i_end <= tw_j_start + 60:  # 客户i可以在客户j之前完成(允许30分钟缓冲)
+            sequence_bonus = 5
+        elif tw_j_end <= tw_i_start + 60:  # 客户j可以在客户i之前完成
+            sequence_bonus = 5
+        
+        # 综合兼容性得分
+        compatibility_score = overlap_score + distance_penalty + sequence_bonus
+        
+        return max(0, compatibility_score)  # 确保非负
 
     def _sort_savings(self):
         """按节约量降序排序"""
@@ -594,8 +680,9 @@ class SavingsAlgorithmSolver(VRPTWSolver):
     def _merge_routes(self):
         """基于节约量合并路径，同时考虑约束条件"""
         # 为每条路径创建标识，用于快速查找
-        route_map = {tuple(route['customers']): idx for idx, route in enumerate(self.routes)}
 
+        route_map = {tuple(route['customers']): idx for idx, route in enumerate(self.routes)}
+        logger.info(f"开始合并路径：第{self.merge_iter}轮，初始路线共有{len(self.routes)}条")
         for saving in self.savings:
             i_id = saving['i']
             j_id = saving['j']
@@ -603,6 +690,10 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             # 找到包含i和j的路径
             route_i = self._find_route_containing(i_id)
             route_j = self._find_route_containing(j_id)
+            # try:
+            #     logger.info(f"尝试合并{i_id}-[{route_i['vehicle_work_start_time']},{route_i['vehicle_work_end_time']}]和{j_id}-[{route_j['vehicle_work_start_time']},{route_j['vehicle_work_end_time']}]")
+            # except:
+            #     pass
 
             if not route_i or not route_j or route_i == route_j:
                 continue  # 路径不存在或已在同一路径
@@ -611,13 +702,14 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             if self._can_merge_routes(route_i, route_j, i_id, j_id):
                 # 执行合并
                 merged_route = self._merge_two_routes(route_i, route_j, i_id, j_id)
+                 # logger.info(f"合并成功")
 
                 # 更新路径列表
                 self.routes.remove(route_i)
                 self.routes.remove(route_j)
                 self.routes.append(merged_route)
 
-        # 分配车辆
+            # 分配车辆
         self._assign_vehicles_to_routes()
 
     def _can_merge_routes(self, route_i, route_j, i_id, j_id) -> bool:
@@ -696,12 +788,12 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             return False
             # isvio = 0
 
-        if self.num_violate_route + isvio > 20:#np.floor(self.max_violate_ratio*len(self.customer_map.keys())):
+        if self.num_violate_route + isvio > 0:#np.floor(self.max_violate_ratio*len(self.customer_map.keys())):
             return False
         else:
             self.num_violate_route += isvio
-            # if isvio != 0:
-            #     logger.error(f"第{self.num_violate_route}条违背规则路线：违背时间{totvio}")
+            if isvio != 0:
+                logger.error(f"第{self.num_violate_route}条违背规则路线：违背时间{totvio}")
 
         return True
 
@@ -768,6 +860,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 route['vehicle_type'] = best_vehicle.vehicle_type if best_vehicle is not None else appropriate_vehicle.vehicle_type
                 selected_vehicles.add(route['vehicle_id'])
             else:
+                self.unassigned = True
                 logger.warning(f"没有合适的车辆满足路径需求")
                 continue
 
