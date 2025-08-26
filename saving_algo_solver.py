@@ -230,7 +230,7 @@ def calculate_travel_time(distance: float = None, loc1=None, loc2=None, vehicle_
         )
 
         if cache_key in _travel_time_cache:
-            return _travel_time_cache[cache_key]
+            return 0.8*_travel_time_cache[cache_key]
         
         # Get appropriate routes matrix based on vehicle type
         routes_matrix = get_appropriate_matrix(vehicle_type)
@@ -244,8 +244,8 @@ def calculate_travel_time(distance: float = None, loc1=None, loc2=None, vehicle_
         # Try to find travel time in routes matrix
         if matrix_key in routes_matrix and routes_matrix[matrix_key]['duration'] is not None:
             travel_time = routes_matrix[matrix_key]['duration']
-            _travel_time_cache[cache_key] = travel_time/60.0
-            return travel_time/60.0
+            _travel_time_cache[cache_key] = 0.8*travel_time/60.0
+            return 0.8*travel_time/60.0
 
     if distance == 0.0:
         return 0.0
@@ -265,9 +265,9 @@ def calculate_travel_time(distance: float = None, loc1=None, loc2=None, vehicle_
                 ','.join([str(loc2.longitude), str(loc2.latitude)]),
                 str(vehicle_type) if vehicle_type else "default"
             )
-            _travel_time_cache[cache_key] = travel_time
+            _travel_time_cache[cache_key] = 0.8*travel_time
         
-        return travel_time
+        return 0.8*travel_time
     
     # Default travel time if all else fails
     return 30.0  # 30 minutes default
@@ -403,6 +403,8 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         self.routes = []  # 存储路径
         self.total_cost = 0.0
         self.is_split = is_split
+        self.num_violate_route = 0
+        self.max_violate_ratio = 0.1
 
     def solve(self) -> Dict[str, Any]:
         """实现带时间窗的节约算法"""
@@ -424,6 +426,11 @@ class SavingsAlgorithmSolver(VRPTWSolver):
 
             # 4. 合并路径
             self._merge_routes()
+            num_violate_routes = 0
+            for route in self.routes:
+                if route.get('time_slack', 0.0) > 0:
+                    num_violate_routes += 1
+            logger.warning(f"合并后一共有{len(self.routes)}条路线，其中违背规则的有{num_violate_routes}条")
 
             # 5. 计算总成本和其他指标
             self._calculate_metrics()
@@ -652,6 +659,8 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         tw_start = parse_time(current_loc.time_window_start)
         work_start_time = tw_start - first_travel_time
         current_time = tw_start + service_time
+        isvio = 0
+        totvio = 0.0
         for cust_id in new_customers[1:]:
             customer = self.customer_map[cust_id]
 
@@ -665,9 +674,11 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             tw_end = parse_time(customer.time_window_end)
             effective_arrival = max(arrival_time, tw_start)
 
-            # if effective_arrival > tw_end:
-            #     # 违反时间窗约束，标记为不可行
-            #     return False
+            if effective_arrival > tw_end:
+                # 违反时间窗约束，标记为不可行
+                if route_i.get('time_slack', 0.0) == 0.0 and route_j.get('time_slack', 0.0) == 0.0:
+                    totvio += effective_arrival - tw_end
+                    isvio = 1
 
             # 计算离开时间
             service_time = get_service_time(customer)
@@ -678,9 +689,19 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             current_loc = customer
 
         # 检查合并后返回仓库的时间是否在车辆可用时间内, 单司机工作时间不超过6小时
-
         if current_time - work_start_time > 6 * 60:
             return False
+
+        if isvio == 1 and totvio < 30:
+            return False
+            # isvio = 0
+
+        if self.num_violate_route + isvio > 20:#np.floor(self.max_violate_ratio*len(self.customer_map.keys())):
+            return False
+        else:
+            self.num_violate_route += isvio
+            # if isvio != 0:
+            #     logger.error(f"第{self.num_violate_route}条违背规则路线：违背时间{totvio}")
 
         return True
 
@@ -717,7 +738,8 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             'breakpoint': None,
             'single_vehicle': False,
             'vehicle_work_start_time': None,
-            'vehicle_work_end_time': None
+            'vehicle_work_end_time': None,
+            'violate': None
         }
 
     def _assign_vehicles_to_routes(self):
@@ -780,7 +802,8 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 tw_end = parse_time(customer.time_window_end)
 
                 if effective_arrival > tw_end:
-                    route['time_slack'] = effective_arrival - tw_end
+                    route['time_slack'] += effective_arrival - tw_end
+                    route['violate'] = True
 
                 new_arrival_times[customer.id] = effective_arrival
 
@@ -842,6 +865,24 @@ class SavingsAlgorithmSolver(VRPTWSolver):
     def _calculate_metrics(self):
         """计算解决方案的各项指标"""
         # 已在合并和分配车辆过程中计算
+
+    def _calculate_total_time_violation(self) -> float:
+        """计算所有路径的时间窗违约总量"""
+        total_violation = 0.0
+        
+        for route in self.routes:
+            if not route.get('arrival_times'):
+                continue
+                
+            for cust_id, arrival_time in route['arrival_times'].items():
+                customer = self.customer_map[cust_id]
+                tw_end = parse_time(customer.time_window_end)
+                
+                if arrival_time > tw_end:
+                    violation = arrival_time - tw_end
+                    total_violation += violation
+        
+        return total_violation
 
 
 class VRPTWMain:

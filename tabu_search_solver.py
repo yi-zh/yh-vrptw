@@ -5,6 +5,7 @@ from datetime import datetime
 import random
 import traceback
 from copy import deepcopy
+import numpy as np
 
 # 继承已有数据类
 from main import Customer, Vehicle, Location, VRPTWSolver, VRPTWProblem, logger, DataManager, OutputManager, \
@@ -21,7 +22,7 @@ TIME_SLACK = 'time_slack'
 class TabuSearchSolver(VRPTWSolver):
     """禁忌搜索算法求解VRPTW问题"""
 
-    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 1000,
+    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 100,
                  neighborhood_size: int = 50, aspiration_value: float = 0.1, enable_penalty=True, penalty_coeff={}):
         super().__init__(problem)
         self.tabu_list = []  # 禁忌表
@@ -198,17 +199,21 @@ class TabuSearchSolver(VRPTWSolver):
             OVER_LOADING_90: 0,
             TIME_SLACK: 0
         }
+        num_violate_routes = 0
         for route in routes:
             if len(route['district']) >= 4:
                 penalty_value[ACROSS_DISTRICTS] += 1
-            penalty_value[TIME_SLACK] += route.get('time_slack', 0)
+            if route.get('time_slack', 0) > 0:
+                num_violate_routes += 1
             vehicle_volume_capacity = self.vehicle_map[route['vehicle_id']].capacity_volume
             load_ratio = route['load_volume'] / vehicle_volume_capacity
             if 0.85 < load_ratio <= 0.9:
                 penalty_value[OVER_LOADING_85] += 1
             elif load_ratio > 0.9:
                 penalty_value[OVER_LOADING_90] += 1
-
+        if num_violate_routes > np.floor(0.1*len(routes)):
+            # logger.warning(f"{len(routes)}条路线中有{num_violate_routes}条违背规则")
+            penalty_value[TIME_SLACK] += 10000
         return penalty_value
 
     def _calculate_solution_penalty(self, routes):
@@ -233,8 +238,13 @@ class TabuSearchSolver(VRPTWSolver):
         neighborhood = []
 
         for _ in range(self.neighborhood_size):
-            # 随机选择一种操作生成邻域解
-            operation = random.choice(['swap', 'insert', 'reverse', 'relocate'])
+            # 随机选择一种操作生成邻域解，增加时间窗约束感知的策略
+            operation = random.choice(['swap', 'insert', 'reverse', 'relocate',
+                                     'time_aware_swap', 'time_aware_relocate',
+                                     'early_late_swap', 'time_slack_optimize'])
+            # operation = random.choice([
+            #                          'time_aware_swap', 'time_aware_relocate',
+            #                          'early_late_swap', 'time_slack_optimize'])
 
             if operation == 'swap':
                 # 交换两个客户在不同路径中的位置
@@ -245,9 +255,21 @@ class TabuSearchSolver(VRPTWSolver):
             elif operation == 'reverse':
                 # 反转路径中的部分客户顺序
                 neighbor = self._reverse_segment(deepcopy(self.current_solution))
-            else:  # relocate
+            elif operation == 'relocate':
                 # 将一个客户从一条路径移动到另一条路径
                 neighbor = self._relocate_customer(deepcopy(self.current_solution))
+            elif operation == 'time_aware_swap':
+                # 基于时间窗兼容性的智能交换
+                neighbor = self._time_aware_swap(deepcopy(self.current_solution))
+            elif operation == 'time_aware_relocate':
+                # 基于时间窗的智能重定位
+                neighbor = self._time_aware_relocate(deepcopy(self.current_solution))
+            elif operation == 'early_late_swap':
+                # 交换早期和晚期客户以优化时间窗
+                neighbor = self._early_late_customer_swap(deepcopy(self.current_solution))
+            else:  # time_slack_optimize
+                # 优化时间松弛度
+                neighbor = self._optimize_time_slack(deepcopy(self.current_solution))
 
             if neighbor and self._is_solution_feasible(neighbor):
                 neighborhood.append(neighbor)
@@ -510,11 +532,14 @@ class TabuSearchSolver(VRPTWSolver):
         # 检查禁忌表和愿望准则
         for solution, value in evaluated:
             solution_hash = self._hash_solution(solution)
-
+            return solution, value[0], value[1]
             # 检查是否在禁忌表中
             if solution_hash in self.tabu_list:
                 # 检查愿望准则：如果解比当前最优解好很多，则接受
                 if value[0] < self.best_cost * (1 - self.aspiration_value):
+                # if value[1] < self.best_penalty * (1 - self.aspiration_value):
+                #     return solution, value[0], value[1]
+                # if value[0] + value[1] < (self.best_cost + self.best_penalty) * (1 - self.aspiration_value):
                     return solution, value[0], value[1]
                 continue
             else:
@@ -573,10 +598,10 @@ class TabuSearchSolver(VRPTWSolver):
 
             # 检查每个客户的时间窗约束
             # for cust_id, arrival_time in route['arrival_times'].items():
-                # customer = self.customer_map[cust_id]
-                # tw_end = self._parse_time(customer.time_window_end)
-                # if arrival_time > tw_end:
-                #     return False
+            #     customer = self.customer_map[cust_id]
+            #     tw_end = self._parse_time(customer.time_window_end)
+            #     if arrival_time > tw_end:
+            #         return False
 
         return True
 
@@ -660,6 +685,253 @@ class TabuSearchSolver(VRPTWSolver):
 
     def _calculate_transportation_cost(self, route: Dict[str, Any]):
         return calculate_transportation_cost(route, self.problem.data_manager.vehicle_costs)
+
+    def _time_aware_swap(self, solution: List[Dict]) -> Optional[List[Dict]]:
+        """基于时间窗兼容性的智能客户交换"""
+        if len(solution) < 2:
+            return None
+
+        # 选择两条路径
+        route_idx1, route_idx2 = random.sample(range(len(solution)), 2)
+        route1 = solution[route_idx1]
+        route2 = solution[route_idx2]
+
+        if (len(route1['customers']) < 1 or len(route2['customers']) < 1 or
+            route1['single_vehicle'] or route2['single_vehicle']):
+            return None
+
+        # 找到时间窗兼容的客户对
+        best_swap = None
+        best_time_improvement = float('-inf')
+
+        for i, cust1_id in enumerate(route1['customers']):
+            for j, cust2_id in enumerate(route2['customers']):
+                cust1 = self.customer_map[cust1_id]
+                cust2 = self.customer_map[cust2_id]
+
+                # 计算时间窗兼容性
+                cust1_tw_start = parse_time(cust1.time_window_start)
+                cust1_tw_end = parse_time(cust1.time_window_end)
+                cust2_tw_start = parse_time(cust2.time_window_start)
+                cust2_tw_end = parse_time(cust2.time_window_end)
+
+                # 检查交换后的时间窗兼容性
+                route1_time_fit = self._check_time_window_fit(route1, j, cust2_tw_start, cust2_tw_end)
+                route2_time_fit = self._check_time_window_fit(route2, i, cust1_tw_start, cust1_tw_end)
+
+                if route1_time_fit and route2_time_fit:
+                    # 计算时间改善度
+                    time_improvement = route1_time_fit + route2_time_fit
+                    if time_improvement > best_time_improvement:
+                        best_time_improvement = time_improvement
+                        best_swap = (i, j, cust1_id, cust2_id)
+
+        if best_swap:
+            i, j, cust1_id, cust2_id = best_swap
+            route1['customers'][i] = cust2_id
+            route2['customers'][j] = cust1_id
+
+            self._recompute_route(route1)
+            self._recompute_route(route2)
+            route1['modified'] = True
+            route2['modified'] = True
+
+        return solution
+
+    def _time_aware_relocate(self, solution: List[Dict]) -> Optional[List[Dict]]:
+        """基于时间窗的智能重定位"""
+        if len(solution) < 1:
+            return None
+
+        # 找到有时间松弛问题的客户
+        problematic_customers = []
+        for route in solution:
+            if route.get('time_slack', 0) > 0:
+                for cust_id in route['customers']:
+                    customer = self.customer_map[cust_id]
+                    arrival_time = route['arrival_times'].get(cust_id, 0)
+                    tw_end = parse_time(customer.time_window_end)
+                    if arrival_time > tw_end:
+                        problematic_customers.append((route, cust_id, arrival_time - tw_end))
+
+        if not problematic_customers:
+            return self._relocate_customer(solution)
+
+        # 选择最严重的时间违约客户
+        problematic_customers.sort(key=lambda x: x[2], reverse=True)
+        source_route, customer_id, violation = problematic_customers[0]
+
+        # 找到最适合的目标路径
+        customer = self.customer_map[customer_id]
+        cust_tw_start = parse_time(customer.time_window_start)
+        cust_tw_end = parse_time(customer.time_window_end)
+
+        best_target = None
+        best_fit_score = float('-inf')
+
+        for target_route in solution:
+            if (target_route == source_route or target_route['single_vehicle'] or
+                target_route.get('time_slack', 0) > 30):  # 避免已有严重时间问题的路径
+                continue
+
+            # 尝试不同插入位置
+            for pos in range(len(target_route['customers']) + 1):
+                fit_score = self._evaluate_insertion_time_fit(target_route, customer_id, pos, cust_tw_start, cust_tw_end)
+                if fit_score > best_fit_score:
+                    best_fit_score = fit_score
+                    best_target = (target_route, pos)
+
+        if best_target and best_fit_score > 0:
+            target_route, insert_pos = best_target
+            
+            # 执行重定位
+            source_route['customers'].remove(customer_id)
+            target_route['customers'].insert(insert_pos, customer_id)
+
+            # 重新计算路径
+            if source_route['customers']:
+                self._recompute_route(source_route)
+            self._recompute_route(target_route)
+
+            source_route['modified'] = True
+            target_route['modified'] = True
+
+        return solution
+
+    def _early_late_customer_swap(self, solution: List[Dict]) -> Optional[List[Dict]]:
+        """交换早期和晚期客户以优化时间窗"""
+        if len(solution) < 2:
+            return None
+
+        # 找到早期和晚期客户
+        early_customers = []
+        late_customers = []
+
+        for route in solution:
+            if route['single_vehicle']:
+                continue
+            for cust_id in route['customers']:
+                customer = self.customer_map[cust_id]
+                tw_start = parse_time(customer.time_window_start)
+                
+                if tw_start < 8 * 60:  # 8:00 AM之前
+                    early_customers.append((route, cust_id, tw_start))
+                elif tw_start > 14 * 60:  # 2:00 PM之后
+                    late_customers.append((route, cust_id, tw_start))
+
+        if not early_customers or not late_customers:
+            return None
+
+        # 随机选择早期和晚期客户
+        early_route, early_cust_id, early_tw = random.choice(early_customers)
+        late_route, late_cust_id, late_tw = random.choice(late_customers)
+
+        if early_route == late_route:
+            return None
+
+        # 检查交换的可行性
+        early_customer = self.customer_map[early_cust_id]
+        late_customer = self.customer_map[late_cust_id]
+
+        early_idx = early_route['customers'].index(early_cust_id)
+        late_idx = late_route['customers'].index(late_cust_id)
+
+        # 执行交换
+        early_route['customers'][early_idx] = late_cust_id
+        late_route['customers'][late_idx] = early_cust_id
+
+        # 重新计算路径
+        self._recompute_route(early_route)
+        self._recompute_route(late_route)
+
+        early_route['modified'] = True
+        late_route['modified'] = True
+
+        return solution
+
+    def _optimize_time_slack(self, solution: List[Dict]) -> Optional[List[Dict]]:
+        """优化时间松弛度，减少时间违约"""
+        # 找到时间松弛度最大的路径
+        max_slack_route = None
+        max_slack = 0
+
+        for route in solution:
+            if route.get('time_slack', 0) > max_slack:
+                max_slack = route.get('time_slack', 0)
+                max_slack_route = route
+
+        if not max_slack_route or max_slack == 0:
+            return None
+
+        # 尝试重新排序客户以减少时间松弛
+        customers = max_slack_route['customers'][:]
+        
+        # 按时间窗开始时间排序
+        customers.sort(key=lambda cid: parse_time(self.customer_map[cid].time_window_start))
+        
+        max_slack_route['customers'] = customers
+        self._recompute_route(max_slack_route)
+        max_slack_route['modified'] = True
+
+        return solution
+
+    def _check_time_window_fit(self, route: Dict, position: int, tw_start: float, tw_end: float) -> float:
+        """检查在指定位置插入客户的时间窗适应度"""
+        if position == 0:
+            # 插入到路径开始
+            if route['customers']:
+                next_customer = self.customer_map[route['customers'][0]]
+                next_tw_start = parse_time(next_customer.time_window_start)
+                if tw_end <= next_tw_start:
+                    return next_tw_start - tw_end  # 时间缓冲
+            return 60  # 默认适应度
+        elif position >= len(route['customers']):
+            # 插入到路径末尾
+            if route['customers']:
+                prev_customer = self.customer_map[route['customers'][-1]]
+                prev_tw_end = parse_time(prev_customer.time_window_end)
+                if tw_start >= prev_tw_end:
+                    return tw_start - prev_tw_end  # 时间缓冲
+            return 60  # 默认适应度
+        else:
+            # 插入到中间位置
+            prev_customer = self.customer_map[route['customers'][position-1]]
+            next_customer = self.customer_map[route['customers'][position]]
+            
+            prev_tw_end = parse_time(prev_customer.time_window_end)
+            next_tw_start = parse_time(next_customer.time_window_start)
+            
+            if prev_tw_end <= tw_start and tw_end <= next_tw_start:
+                return min(tw_start - prev_tw_end, next_tw_start - tw_end)
+        
+        return -1  # 不适合
+
+    def _evaluate_insertion_time_fit(self, route: Dict, customer_id: str, position: int, tw_start: float, tw_end: float) -> float:
+        """评估在指定位置插入客户的时间适应度"""
+        # 基本时间窗检查
+        basic_fit = self._check_time_window_fit(route, position, tw_start, tw_end)
+        if basic_fit < 0:
+            return -1
+
+        # 考虑路径的当前时间松弛度
+        current_slack = route.get('time_slack', 0)
+        slack_penalty = current_slack * 0.1
+
+        # 考虑插入位置的距离影响
+        distance_factor = 0
+        if position < len(route['customers']):
+            if position > 0:
+                prev_customer = self.customer_map[route['customers'][position-1]]
+                next_customer = self.customer_map[route['customers'][position]]
+                new_customer = self.customer_map[customer_id]
+                
+                # 计算插入后的额外距离
+                original_distance = calculate_distance(prev_customer, next_customer)
+                new_distance = (calculate_distance(prev_customer, new_customer) + 
+                              calculate_distance(new_customer, next_customer))
+                distance_factor = max(0, 10 - (new_distance - original_distance))
+
+        return basic_fit - slack_penalty + distance_factor
 
 
 class VRPTWMain:
