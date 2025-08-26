@@ -43,7 +43,7 @@ def load_routes_matrix():
     
     try:
         # Load regular routes matrix
-        routes_file = Path("csv_data/input/route_matrix.csv")
+        routes_file = Path("csv_data/input/route_matrix-10.csv")
         if routes_file.exists():
             print(f"Loading regular routes matrix from {routes_file.name}...")
             regular_matrix = _load_single_matrix(routes_file)
@@ -61,7 +61,7 @@ def load_routes_matrix():
             try:
                 # if regular_matrix[key]['duration'] is None and regular_matrix_2[key]['duration'] is not None:
                 #     regular_matrix[key] = regular_matrix_2[key]
-                if regular_matrix[key]['duration'] > regular_matrix_2[key]['duration']:
+                if regular_matrix[key]['duration'] > regular_matrix_2[key]['duration'] and regular_matrix_2[key] != 0:
                     regular_matrix[key] = regular_matrix_2[key]
             except:
                 continue
@@ -458,6 +458,8 @@ class SavingsAlgorithmSolver(VRPTWSolver):
 
                 # if not self.unassigned:
                 #     break
+                if len(self.routes) <= len(self.vehicle_map):
+                    break
                 if len(self.routes) >= pre_num_routes:
                     break
 

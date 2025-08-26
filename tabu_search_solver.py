@@ -17,13 +17,15 @@ ACROSS_DISTRICTS = "acrosss_districts"
 OVER_LOADING_85 = "over_loading_85"
 OVER_LOADING_90 = "over_loading_90"
 TIME_SLACK = 'time_slack'
+INVALID_ROUTE = 'invalid_route'
 
+MAX_INVALID_RATIO = 0
 
 class TabuSearchSolver(VRPTWSolver):
     """禁忌搜索算法求解VRPTW问题"""
 
-    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 100,
-                 neighborhood_size: int = 50, aspiration_value: float = 0.1, enable_penalty=True, penalty_coeff={}):
+    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 1000,
+                 neighborhood_size: int = 50, aspiration_value: float = 0.1, enable_penalty=False, penalty_coeff={}):
         super().__init__(problem)
         self.tabu_list = []  # 禁忌表
         self.tabu_size = tabu_size  # 禁忌表大小
@@ -49,7 +51,6 @@ class TabuSearchSolver(VRPTWSolver):
         try:
             # 1. 生成初始解
             self._generate_initial_solution()
-            self._establish_info_map()
 
             if not self.current_solution:
                 raise ValueError("无法生成初始解")
@@ -94,6 +95,8 @@ class TabuSearchSolver(VRPTWSolver):
                         logger.info(f"迭代 {iter}: 未找到更优解，成本 {self.best_cost:.2f}, 惩罚 {best_neighbor_penalty:.2f}")
                     continue  # 没有找到可行解
 
+                logger.info(f"invalid route cnt is {sum(i.get('invalid', False) for i in best_neighbor)}")
+
                 # 更新当前解
                 self.current_solution = best_neighbor
 
@@ -127,6 +130,8 @@ class TabuSearchSolver(VRPTWSolver):
                 'vehicles_used': len(self.best_solution),
                 'status': 'solved'
             }
+
+            logger.info(f"invalid route cnt of the best solution is {sum(i.get('invalid', False) for i in self.best_solution)}")
 
             self.solution = solution
             return solution
@@ -185,36 +190,65 @@ class TabuSearchSolver(VRPTWSolver):
         """生成初始解（可以使用节约算法的结果作为初始解）"""
         # 使用节约算法生成初始解
         savings_solution = self.saving_solver.solve()
+        self._establish_info_map()
 
         if savings_solution['status'] == 'solved':
+            for route in savings_solution['routes']:
+                if route['time_slack'] > 0:
+                    route['invalid'] = True
             self.current_solution = savings_solution['routes']
             self.best_cost = savings_solution['total_cost']
         else:
             raise Exception("Saving algorithm fails. No available initial solution!")
+
+    # def _calculate_solution_penalty_value(self, routes):
+    #     penalty_value = {
+    #         ACROSS_DISTRICTS: 0,
+    #         OVER_LOADING_85: 0,
+    #         OVER_LOADING_90: 0,
+    #         TIME_SLACK: 0
+    #     }
+    #     num_violate_routes = 0
+    #     for route in routes:
+    #         if len(route['district']) >= 4:
+    #             penalty_value[ACROSS_DISTRICTS] += 1
+    #         if route.get('time_slack', 0) > 0:
+    #             num_violate_routes += 1
+    #         vehicle_volume_capacity = self.vehicle_map[route['vehicle_id']].capacity_volume
+    #         load_ratio = route['load_volume'] / vehicle_volume_capacity
+    #         if 0.85 < load_ratio <= 0.9:
+    #             penalty_value[OVER_LOADING_85] += 1
+    #         elif load_ratio > 0.9:
+    #             penalty_value[OVER_LOADING_90] += 1
+    #         penalty_value
+    #     if num_violate_routes > np.floor(0.1*len(routes)):
+    #         # logger.warning(f"{len(routes)}条路线中有{num_violate_routes}条违背规则")
+    #         penalty_value[TIME_SLACK] += 10000
+    #
+    #     return penalty_value
 
     def _calculate_solution_penalty_value(self, routes):
         penalty_value = {
             ACROSS_DISTRICTS: 0,
             OVER_LOADING_85: 0,
             OVER_LOADING_90: 0,
-            TIME_SLACK: 0
+            TIME_SLACK: 0,
+            INVALID_ROUTE: sum(i.get('invalid', False) for i in routes)
         }
-        num_violate_routes = 0
         for route in routes:
             if len(route['district']) >= 4:
                 penalty_value[ACROSS_DISTRICTS] += 1
-            if route.get('time_slack', 0) > 0:
-                num_violate_routes += 1
+            penalty_value[TIME_SLACK] += route.get('time_slack', 0)
             vehicle_volume_capacity = self.vehicle_map[route['vehicle_id']].capacity_volume
             load_ratio = route['load_volume'] / vehicle_volume_capacity
             if 0.85 < load_ratio <= 0.9:
                 penalty_value[OVER_LOADING_85] += 1
             elif load_ratio > 0.9:
                 penalty_value[OVER_LOADING_90] += 1
-        if num_violate_routes > 0:#np.floor(0.1*len(routes)):
-            logger.warning(f"{len(routes)}条路线中有{num_violate_routes}条违背规则")
-            penalty_value[TIME_SLACK] += 10000
+
+
         return penalty_value
+
 
     def _calculate_solution_penalty(self, routes):
         penalty_value = self._calculate_solution_penalty_value(routes)
@@ -434,20 +468,21 @@ class TabuSearchSolver(VRPTWSolver):
         route['height_restricted'] = True in [self.customer_map[i].height_restricted for i in route['customers']]
         suitable_vehicle = self.saving_solver._find_suitable_vehicle(total_weight, total_volume,
                                                                      route['height_restricted'])
-        if suitable_vehicle is None:
+        if suitable_vehicle is None or not suitable_vehicle:
             route['feasible'] = False
             return
-
         suitable_vehicle_type = "4.2" if suitable_vehicle.vehicle_type == "4.2m厢式货车" else ""
-        if not suitable_vehicle:
-            route['feasible'] = False
-            return
 
         # 重新计算时间信息
         arrival_times = {}
         departure_times = {}
         district = set()
         customer_num = len(route['customers'])
+        for cust_id in route['customers']:
+            customer = self.customer_map[cust_id]
+            if customer.delivery_type == "单点配送" and customer_num >= 2:
+                route['feasible'] = False
+                return
 
         current_loc = self.customer_map[route['customers'][0]]
         service_time = get_service_time(current_loc)
@@ -462,11 +497,8 @@ class TabuSearchSolver(VRPTWSolver):
         current_time = tw_start + service_time
         departure_times[route['customers'][0]] = current_time
 
-        for cust_id in route['customers']:
+        for cust_id in route['customers'][1:]:
             customer = self.customer_map[cust_id]
-            if customer.delivery_type == "单点配送" and customer_num >= 2:
-                route['feasible'] = False
-                return
 
             # 计算到达时间
             distance = calculate_distance(current_loc, customer, suitable_vehicle_type)
@@ -482,6 +514,7 @@ class TabuSearchSolver(VRPTWSolver):
             if effective_arrival > tw_end:
                 # 违反时间窗约束，标记为不可行
                 route['time_slack'] += effective_arrival - tw_end
+                route['invalid'] = True
 
             district.add(extract_district(customer.address))
 
@@ -498,8 +531,9 @@ class TabuSearchSolver(VRPTWSolver):
         vehicle_work_end_time = current_time
 
         if vehicle_work_end_time - work_start_time > 60 * 6:
-            route['feasible'] = False
-            return
+            route['invalid'] = True
+            # route['feasible'] = False
+            # return
 
         route['arrival_times'] = arrival_times
         route['departure_times'] = departure_times
@@ -531,19 +565,16 @@ class TabuSearchSolver(VRPTWSolver):
             return None, float('inf'), float('inf')
 
         # todo 可以设置不同的排序方式
-        evaluated.sort(key=lambda x: (x[1][1], x[1][0]))
+        evaluated.sort(key=lambda x: (x[1][0], x[1][1]))
 
         # 检查禁忌表和愿望准则
         for solution, value in evaluated:
             solution_hash = self._hash_solution(solution)
-            return solution, value[0], value[1]
+
             # 检查是否在禁忌表中
             if solution_hash in self.tabu_list:
                 # 检查愿望准则：如果解比当前最优解好很多，则接受
                 if value[0] < self.best_cost * (1 - self.aspiration_value):
-                # if value[1] < self.best_penalty * (1 - self.aspiration_value):
-                #     return solution, value[0], value[1]
-                # if value[0] + value[1] < (self.best_cost + self.best_penalty) * (1 - self.aspiration_value):
                     return solution, value[0], value[1]
                 continue
             else:
@@ -600,6 +631,10 @@ class TabuSearchSolver(VRPTWSolver):
             if not route.get('feasible', True):
                 return False
 
+        invalid_cnt = sum(i.get('invalid', False) for i in solution)
+        if invalid_cnt > MAX_INVALID_RATIO * len(self.vehicle_map):
+            return False
+
             # 检查每个客户的时间窗约束
             # for cust_id, arrival_time in route['arrival_times'].items():
             #     customer = self.customer_map[cust_id]
@@ -631,8 +666,8 @@ class TabuSearchSolver(VRPTWSolver):
                 return False
 
             # # 检查时间约束
-            if route['vehicle_work_end_time'] - route['vehicle_work_start_time'] > 60*6:
-                return False
+            # if route['vehicle_work_end_time'] - route['vehicle_work_start_time'] > 60*6:
+            #     return False
             # if route['vehicle_work_end_time'] > self._parse_time(vehicle.available_time_end):
             #     logger.info(f"vehicle: {route['vehicle_id']}, route_load is {route['load_volume']}, capacity is {vehicle.capacity_volume}")
             #     return False
@@ -976,7 +1011,8 @@ class VRPTWMain:
                 ACROSS_DISTRICTS: 10,
                 OVER_LOADING_85: 5,
                 OVER_LOADING_90: 10,
-                TIME_SLACK: 10
+                TIME_SLACK: 10,
+                INVALID_ROUTE: 10000
             }
             solver = TabuSearchSolver(self.problem, enable_penalty=True, penalty_coeff=penalty_coeff)
             solution = solver.solve()
