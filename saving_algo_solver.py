@@ -49,9 +49,25 @@ def load_routes_matrix():
             regular_matrix = _load_single_matrix(routes_file)
         else:
             print(f"Regular routes matrix file not found: {routes_file}")
-            
+
+        routes_file = Path("csv_data/input/route_matrix-11.csv")
+        if routes_file.exists():
+            print(f"Loading regular routes matrix from {routes_file.name}...")
+            regular_matrix_2 = _load_single_matrix(routes_file)
+        else:
+            print(f"Regular routes matrix file not found: {routes_file}")
+
+        for key in regular_matrix.keys():
+            try:
+                # if regular_matrix[key]['duration'] is None and regular_matrix_2[key]['duration'] is not None:
+                #     regular_matrix[key] = regular_matrix_2[key]
+                if regular_matrix[key]['duration'] > regular_matrix_2[key]['duration']:
+                    regular_matrix[key] = regular_matrix_2[key]
+            except:
+                continue
+
         # Load 4.2m vehicle routes matrix
-        routes_42_file = Path("csv_data/input/route_matrix_42.csv")
+        routes_42_file = Path("csv_data/input/route_matrix_42-10.csv")
         if routes_42_file.exists():
             print(f"Loading 4.2m vehicle routes matrix from {routes_42_file.name}...")
             matrix_42 = _load_single_matrix(routes_42_file)
@@ -108,9 +124,11 @@ def _load_single_matrix(file_path):
                     dest = str(row[dest_col]).strip()
 
                     distance = float(row[distance_col]) if distance_col and pd.notna(row[distance_col]) else None
-                    duration = float(row[duration_col]) if duration_col and pd.notna(row[duration_col]) else None
+                    duration = 0.7*float(row[duration_col]) if duration_col and pd.notna(row[duration_col]) else None
 
-                    # Store both directions
+                    # if distance is None or duration is None:
+                    #     print("?")
+
                     routes_dict[(origin, dest)] = {
                         'distance': distance,
                         'duration': duration
@@ -180,6 +198,11 @@ def calculate_distance(loc1, loc2, vehicle_type=None) -> float:
         distance = routes_matrix[matrix_key]['distance']
         _distance_cache[cache_key] = distance/1000.0
         return distance/1000.0
+
+    if loc1_id == loc2_id or (loc1.longitude == loc2.longitude and loc1.latitude == loc2.latitude):
+        return 0.0
+    else:
+        logger.error(f"未取得高德结果：{matrix_key}")
     
     # Fallback to euclidean distance calculation
     try:
@@ -230,7 +253,7 @@ def calculate_travel_time(distance: float = None, loc1=None, loc2=None, vehicle_
         )
 
         if cache_key in _travel_time_cache:
-            return 0.8*_travel_time_cache[cache_key]
+            return _travel_time_cache[cache_key]
         
         # Get appropriate routes matrix based on vehicle type
         routes_matrix = get_appropriate_matrix(vehicle_type)
@@ -244,8 +267,8 @@ def calculate_travel_time(distance: float = None, loc1=None, loc2=None, vehicle_
         # Try to find travel time in routes matrix
         if matrix_key in routes_matrix and routes_matrix[matrix_key]['duration'] is not None:
             travel_time = routes_matrix[matrix_key]['duration']
-            _travel_time_cache[cache_key] = 0.8*travel_time/60.0
-            return 0.8*travel_time/60.0
+            _travel_time_cache[cache_key] = travel_time/60.0
+            return travel_time/60.0
 
     if distance == 0.0:
         return 0.0
@@ -265,9 +288,9 @@ def calculate_travel_time(distance: float = None, loc1=None, loc2=None, vehicle_
                 ','.join([str(loc2.longitude), str(loc2.latitude)]),
                 str(vehicle_type) if vehicle_type else "default"
             )
-            _travel_time_cache[cache_key] = 0.8*travel_time
+            _travel_time_cache[cache_key] = travel_time
         
-        return 0.8*travel_time
+        return travel_time
     
     # Default travel time if all else fails
     return 30.0  # 30 minutes default
@@ -420,7 +443,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             self._initialize_routes()
 
             pre_num_routes = len(self.routes)
-            while (self.merge_iter < 10):
+            while (self.merge_iter < 20):
                 self.unassigned = False
                 self.merge_iter += 1
                 # 2. 计算所有客户对之间的节约量
@@ -605,7 +628,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 
                 # 综合节约量：距离节约 + 时间窗兼容性奖励
                 # if self.merge_iter <= 3:
-                total_saving = distance_saving + time_window_compatibility*10 #max(0.0, time_window_compatibility * (self.merge_iter-2)*100)  # 时间窗权重可调整
+                total_saving = distance_saving + max(0.0, time_window_compatibility * (5-self.merge_iter)*10)  # 时间窗权重可调整
                 # else:
                 #     total_saving = distance_saving
                 self.savings.append({
@@ -663,9 +686,9 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         
         # 方法3：时间窗顺序奖励
         sequence_bonus = 0
-        if tw_i_end <= tw_j_start + 60:  # 客户i可以在客户j之前完成(允许30分钟缓冲)
+        if tw_i_end <= tw_j_start + self.merge_iter*50:  # 客户i可以在客户j之前完成(允许30分钟缓冲)
             sequence_bonus = 5
-        elif tw_j_end <= tw_i_start + 60:  # 客户j可以在客户i之前完成
+        elif tw_j_end <= tw_i_start + self.merge_iter*50:  # 客户j可以在客户i之前完成
             sequence_bonus = 5
         
         # 综合兼容性得分
@@ -767,6 +790,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             effective_arrival = max(arrival_time, tw_start)
 
             if effective_arrival > tw_end:
+                return False
                 # 违反时间窗约束，标记为不可行
                 if route_i.get('time_slack', 0.0) == 0.0 and route_j.get('time_slack', 0.0) == 0.0:
                     totvio += effective_arrival - tw_end
@@ -784,7 +808,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         if current_time - work_start_time > 6 * 60:
             return False
 
-        if isvio == 1 and totvio < 30:
+        if isvio == 1 and totvio > 1:
             return False
             # isvio = 0
 

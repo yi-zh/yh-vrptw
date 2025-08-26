@@ -1334,7 +1334,7 @@ class OutputManager:
                         '行驶时间': round(travel_time_minutes, 1),
                         '线路单边里程': round(total_route_distance, 3) if i == 1 else '',
                         '线路时间(单边)': round(total_route_time, 2) if i == 1 else '',
-                        '线路方量': round(total_route_volume * 1000, 3) if i == 1 else '',  # Convert to liters
+                        '线路方量': round(total_route_volume, 3) if i == 1 else '',  # Convert to liters
                         '最晚离仓时间': latest_departure_time if i == 1 else '',
                         '车型': chinese_vehicle_type
                     }

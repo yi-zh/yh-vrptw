@@ -22,7 +22,7 @@ TIME_SLACK = 'time_slack'
 class TabuSearchSolver(VRPTWSolver):
     """禁忌搜索算法求解VRPTW问题"""
 
-    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 10,
+    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 100,
                  neighborhood_size: int = 50, aspiration_value: float = 0.1, enable_penalty=True, penalty_coeff={}):
         super().__init__(problem)
         self.tabu_list = []  # 禁忌表
@@ -211,8 +211,8 @@ class TabuSearchSolver(VRPTWSolver):
                 penalty_value[OVER_LOADING_85] += 1
             elif load_ratio > 0.9:
                 penalty_value[OVER_LOADING_90] += 1
-        if num_violate_routes > np.floor(0.1*len(routes)):
-            # logger.warning(f"{len(routes)}条路线中有{num_violate_routes}条违背规则")
+        if num_violate_routes > 0:#np.floor(0.1*len(routes)):
+            logger.warning(f"{len(routes)}条路线中有{num_violate_routes}条违背规则")
             penalty_value[TIME_SLACK] += 10000
         return penalty_value
 
@@ -434,6 +434,10 @@ class TabuSearchSolver(VRPTWSolver):
         route['height_restricted'] = True in [self.customer_map[i].height_restricted for i in route['customers']]
         suitable_vehicle = self.saving_solver._find_suitable_vehicle(total_weight, total_volume,
                                                                      route['height_restricted'])
+        if suitable_vehicle is None:
+            route['feasible'] = False
+            return
+
         suitable_vehicle_type = "4.2" if suitable_vehicle.vehicle_type == "4.2m厢式货车" else ""
         if not suitable_vehicle:
             route['feasible'] = False
