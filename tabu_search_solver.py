@@ -27,7 +27,7 @@ MAX_INVALID_RATIO = 0
 class TabuSearchSolver(VRPTWSolver):
     """禁忌搜索算法求解VRPTW问题"""
 
-    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 10000,
+    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 5000,
                  neighborhood_size: int = 100, aspiration_value: float = 0.1, enable_penalty=False, penalty_coeff={}, enable_plotting=True):
         super().__init__(problem)
         self.tabu_list = []  # 禁忌表
@@ -326,7 +326,6 @@ class TabuSearchSolver(VRPTWSolver):
     def _generate_initial_solution(self):
         """生成初始解（可以使用节约算法的结果作为初始解）"""
         # 使用节约算法生成初始解
-        # self._load_previous_solution()
         self._load_previous_solution()
         if self.current_solution:
             self.best_cost = sum([route['cost'] for route in self.current_solution])
@@ -450,7 +449,7 @@ class TabuSearchSolver(VRPTWSolver):
                 if route_data['customers']:  # 只添加有客户的路径
                     # 按配送顺序排序
                     route_data['customers'].sort(key=lambda cid: df[df['销售订单'] == self.customer_map[cid].sales_order]['配送顺序'].iloc[0])
-                    route_data['sequence'] = ['warehouse'] + route_data['customers'] + ['warehouse']
+                    route_data['sequence'] = ['warehouse'] + route_data['customers']# + ['warehouse']
                     
                     # 转换district为列表
                     route_data['district'] = list(route_data['district'])
@@ -995,10 +994,10 @@ class TabuSearchSolver(VRPTWSolver):
         # Use correct parameters for generate_output
         success = self.output_manager.generate_output(solution, self.data_manager, filename)
         
-        # if success:
-        #     logger.info(f"✅ Successfully saved intermediate solution: {filename}")
-        # else:
-        #     logger.warning(f"❌ Failed to save intermediate solution: {filename}")
+        if success:
+            logger.info(f"✅ Successfully saved intermediate solution: {filename}")
+        else:
+            logger.warning(f"❌ Failed to save intermediate solution: {filename}")
             
         return success
 

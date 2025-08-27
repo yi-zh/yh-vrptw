@@ -71,7 +71,7 @@ class Customer:
     delivery_method: str = ""     # 交接方式 (称重点数/信任交接)
     height_restricted: bool = False  # 是否限高
     vehicle_restriction: str = ""    # 限制车型名称
-    extra_work_hours: float = 0.0    # 额外工作时长（小时）
+    extra_work_time: float = 0.0    # 额外工作时长（min）
     requires_porter: bool = False    # 是否需要搬运工
     delivery_type: str = "正常"      # 配送类型
 
@@ -183,10 +183,10 @@ class DataManager:
                             
                             # Store special rules for this sub customer
                             customer_rules[sub_code] = {
-                                'delivery_method': str(row['交接方式']).strip() if pd.notna(row['交接方式']) else "",
+                                'delivery_method': str(row['交接方式']).strip() if pd.notna(row['交接方式']) else "称重点数",
                                 'height_restricted': str(row['是否限高']).strip() == '是' if pd.notna(row['是否限高']) else False,
-                                'vehicle_restriction': str(row['限制车型名称']).strip() if pd.notna(row['限制车型名称']) else "",
-                                'extra_work_hours': float(row['额外工作时长（小时）']) if pd.notna(row['额外工作时长（小时）']) and str(row['额外工作时长（小时）']).strip() != '' else 0.0,
+                                # 'vehicle_restriction': str(row['限制车型名称']).strip() if pd.notna(row['限制车型名称']) else "",
+                                'extra_work_time': float(row['额外工作时长']) if pd.notna(row['额外工作时长']) and str(row['额外工作时长']).strip() != '' else 0.0,
                                 'requires_porter': str(row['是否需要搬运工']).strip() == '是' if pd.notna(row['是否需要搬运工']) else False,
                                 'delivery_type': str(row['配送类型']).strip() if pd.notna(row['配送类型']) else "正常"
                             }
@@ -306,7 +306,7 @@ class DataManager:
                             delivery_method=special_rules.get('delivery_method', ""),
                             height_restricted=special_rules.get('height_restricted', False),
                             vehicle_restriction=special_rules.get('vehicle_restriction', ""),
-                            extra_work_hours=special_rules.get('extra_work_hours', 0.0),
+                            extra_work_time=special_rules.get('extra_work_time', 0.0),
                             requires_porter=special_rules.get('requires_porter', False),
                             delivery_type=special_rules.get('delivery_type', "正常")
                         )
@@ -375,7 +375,7 @@ class DataManager:
                     delivery_method=base_customer.delivery_method,
                     height_restricted=base_customer.height_restricted,
                     vehicle_restriction=base_customer.vehicle_restriction,
-                    extra_work_hours=base_customer.extra_work_hours,
+                    extra_work_time=base_customer.extra_work_time,
                     requires_porter=base_customer.requires_porter,
                     delivery_type=base_customer.delivery_type
                 )
@@ -1285,8 +1285,8 @@ class OutputManager:
                         continue
 
                     # Find customer details
-                    customer = next((c for c in data_manager.customers 
-                                   if c.id == customer_id or c.id == customer_id.split("-")[0]), None)
+                    customer = next((c for c in data_manager.customers
+                                   if c.id == customer_id or c.id == customer_id.split("_")[0]), None)
                     
                     if not customer:
                         continue
@@ -1350,6 +1350,8 @@ class OutputManager:
             # Save with UTF-8 BOM encoding for proper Chinese character display
             df.to_csv(output_file, index=False, encoding='utf-8-sig')
             
+            self._generate_new_template_output(solution, data_manager, output_file)
+
             # logger.info(f"Output generated successfully: {output_file}")
             # logger.info(f"Total rows: {len(output_data)}")
             # logger.info(f"Routes: {len(solution.get('routes', []))}")
@@ -1360,6 +1362,150 @@ class OutputManager:
             import traceback
             traceback.print_exc()
             return False
+
+    def _generate_new_template_output(self, solution: Dict[str, Any], data_manager: DataManager, output_file: str):
+        """Generate output in the new template format"""
+        try:
+            new_template_data = []
+            
+            for route in solution.get('routes', []):
+                if not route.get('customers'):
+                    continue
+                
+                vehicle_id = route['vehicle_id']
+                vehicle = next((v for v in data_manager.vehicles if v.id == vehicle_id), None)
+                vehicle_type = vehicle.vehicle_type if vehicle else "Unknown"
+                
+                # Map vehicle types for new template
+                vehicle_type_mapping = {
+                    "小型面包车": "小型面包车",
+                    "大型面包车": "大型面包车", 
+                    "4.2m厢式货车": "4.2m厢式货车",
+                    "Default": "4.2m厢式货车"
+                }
+                chinese_vehicle_type = vehicle_type_mapping.get(vehicle_type, "4.2m厢式货车")
+                
+                # Generate a route number (运单号)
+                route_number = f"{vehicle_id}"
+                
+                for i in range(len(route['sequence'])):
+                    customer_id = route['sequence'][i]
+                    if customer_id == "warehouse":
+                        continue
+
+                    # Find customer details
+                    customer = next((c for c in data_manager.customers
+                                   if c.id == customer_id or c.id == customer_id.split("_")[0]), None)
+                    
+                    if not customer:
+                        continue
+                    
+                    # Calculate delivery order
+                    delivery_order = i  # Position in sequence
+                    
+                    # Get arrival and departure times
+                    arrival_minutes = route.get('arrival_times', {}).get(customer_id, 0)
+                    departure_minutes = route.get('departure_times', {}).get(customer_id, 0)
+                    
+                    arrival_time = self._minutes_to_time_str(arrival_minutes)
+                    departure_time = self._minutes_to_time_str(departure_minutes)
+                    
+                    # Calculate segment distance and time (from previous stop)
+                    segment_distance = route.get('interval_distance', {}).get(customer_id, 0)
+                    segment_time = route.get('interval_time', {}).get(customer_id, 0)
+                    segment_speed = 0
+                    if segment_time > 0:
+                        segment_speed = round(segment_distance / (segment_time / 60), 1)
+                    
+                    # Get customer load information
+                    customer_load = self._calculate_customer_load_for_output(customer, data_manager.products)
+                    volume = customer_load.get('volume', 0)
+                    cost = route.get('cost', 0)
+                    
+                    # Extract district from address
+                    district = self._extract_district_from_address(customer.address)
+                    
+                    # Determine delivery method and restrictions
+                    delivery_method = getattr(customer, 'delivery_method', '信任')
+                    is_height_restricted = "是" if getattr(customer, 'height_restricted', False) else "否"
+                    requires_porter = "是" if getattr(customer, 'requires_porter', False) else "否"
+                    single_vehicle = "是" if route.get('single_vehicle', False) else "否"
+                    
+                    # Estimated unloading time
+                    unloading_time = float(departure_minutes) - float(arrival_minutes)  # Default 15 minutes
+                    extra_stay_time = getattr(customer, 'extra_work_time', 0)  # Convert hours to minutes
+                    
+                    new_template_row = {
+                        '运单号': route_number,
+                        '订单号': customer.sales_order,
+                        '配送顺序': delivery_order,
+                        '串点': '-',  # Default value
+                        '子客户编码': getattr(customer, 'sub_customer_code', customer.id),
+                        '子客户名称': getattr(customer, 'sub_customer_name', customer.name),
+                        '配送地址': customer.address,
+                        '地址行政区': district,
+                        '客户时间窗最早（周内）': customer.time_window_start.split(' ')[1] if ' ' in customer.time_window_start else customer.time_window_start,
+                        '客户时间窗最晚（周内）': customer.time_window_end.split(' ')[1] if ' ' in customer.time_window_end else customer.time_window_end,
+                        '段落里程(km)': round(segment_distance, 2),
+                        '段落行驶时间(min)': int(segment_time),
+                        '段落速度（KM/h）': segment_speed,
+                        '体积(m³)': round(volume, 4),
+                        '到达客户时间': arrival_time,
+                        '离开客户时间': departure_time,
+                        '车型': chinese_vehicle_type,
+                        '运费': cost,
+                        '交货方式': delivery_method,
+                        '预计卸货时间（MIN)': unloading_time,
+                        '是否限高': is_height_restricted,
+                        '额外停留时间（min)': int(extra_stay_time),
+                        '指定单车配送': single_vehicle,
+                        '断点配送': requires_porter
+                    }
+                    
+                    new_template_data.append(new_template_row)
+            
+            # Save new template format
+            new_template_file = output_file.replace('.csv', '_new_template.csv')
+            df_new = pd.DataFrame(new_template_data)
+            df_new.to_csv(new_template_file, index=False, encoding='utf-8-sig')
+            logger.info(f"✅ New template output saved to {new_template_file} with {len(new_template_data)} rows")
+            
+        except Exception as e:
+            logger.error(f"Error generating new template output: {e}")
+    
+    def _calculate_customer_load_for_output(self, customer, products) -> Dict[str, float]:
+        """Calculate customer load for output formatting"""
+        total_weight = 0.0
+        total_volume = 0.0
+        
+        for product_id, quantity in customer.demand.items():
+            product = next((p for p in products if p.id == product_id), None)
+            if product:
+                total_weight += product.weight_per_unit * quantity
+                total_volume += product.volume_per_unit * quantity
+        
+        return {
+            'weight': total_weight,
+            'volume': total_volume
+        }
+    
+    def _extract_district_from_address(self, address: str) -> str:
+        """Extract district from address"""
+        import re
+        pattern = r'([\u4e00-\u9fa5]{2}区)'
+        match = re.search(pattern, address)
+        return match.group(1) if match else ""
+    
+    def _minutes_to_time_str(self, minutes: int) -> str:
+        """Convert minutes since midnight to time string"""
+        try:
+            minutes_int = int(round(minutes))
+            hours = minutes_int // 60
+            mins = minutes_int % 60
+            # Use 2025-06-30 as the base date (from the time windows)
+            return f"{hours:02d}:{mins:02d}"
+        except Exception as e:
+            return "00:00"
 
 def minutes_to_datetime_str(minutes: int) -> str:
     """Convert minutes since midnight to datetime string"""

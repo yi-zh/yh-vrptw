@@ -124,7 +124,7 @@ def _load_single_matrix(file_path):
                     dest = str(row[dest_col]).strip()
 
                     distance = float(row[distance_col]) if distance_col and pd.notna(row[distance_col]) else None
-                    duration = 0.7*float(row[duration_col]) if duration_col and pd.notna(row[duration_col]) else None
+                    duration = 0.9*float(row[duration_col]) if duration_col and pd.notna(row[duration_col]) else None
 
                     # if distance is None or duration is None:
                     #     print("?")
@@ -310,7 +310,7 @@ def extract_district(address: str) -> str:
 
 def get_service_time(customer: Customer) -> float:
     """获取客户的服务时间（分钟）"""
-    addition_time = customer.extra_work_hours * 60
+    addition_time = customer.extra_work_time
     volume = customer.volume
     delivery_method = customer.delivery_method if (customer.delivery_method is not None
                                                    or customer.delivery_method != ""
@@ -383,6 +383,9 @@ def calculate_transportation_cost(route:Dict[str, Any], fee_map):
     distance = route['total_distance']
     customers_num = len(route['customers'])
 
+    if selected_vehicle_type == "4.2米":
+        selected_vehicle_type = "4.2m厢式货车"
+
     base_fee = 0
     cost_stage = get_cost_stage(distance)
     if cost_stage <= 4:
@@ -393,7 +396,7 @@ def calculate_transportation_cost(route:Dict[str, Any], fee_map):
             base_fee += float(fee_map[selected_vehicle_type][VEHICLE_COST_MAP[5]]) * (
                         distance - 100)
 
-    if selected_vehicle_type == "4.2m厢式货车":
+    if selected_vehicle_type in ["4.2m厢式货车"]:
         return base_fee + 20 * max(0, customers_num - 2)
     else:
         return base_fee + 15 * max(0, customers_num - 2)
