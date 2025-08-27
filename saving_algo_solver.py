@@ -61,13 +61,13 @@ def load_routes_matrix():
             try:
                 # if regular_matrix[key]['duration'] is None and regular_matrix_2[key]['duration'] is not None:
                 #     regular_matrix[key] = regular_matrix_2[key]
-                if regular_matrix[key]['duration'] > regular_matrix_2[key]['duration'] and regular_matrix_2[key] != 0:
+                if regular_matrix[key]['duration'] > regular_matrix_2[key]['duration']:
                     regular_matrix[key] = regular_matrix_2[key]
             except:
                 continue
 
         # Load 4.2m vehicle routes matrix
-        routes_42_file = Path("csv_data/input/route_matrix_42-10.csv")
+        routes_42_file = Path("csv_data/input/route_matrix_42-11.csv")
         if routes_42_file.exists():
             print(f"Loading 4.2m vehicle routes matrix from {routes_42_file.name}...")
             matrix_42 = _load_single_matrix(routes_42_file)

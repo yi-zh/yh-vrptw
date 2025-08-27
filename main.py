@@ -1350,14 +1350,16 @@ class OutputManager:
             # Save with UTF-8 BOM encoding for proper Chinese character display
             df.to_csv(output_file, index=False, encoding='utf-8-sig')
             
-            logger.info(f"Output generated successfully: {output_file}")
-            logger.info(f"Total rows: {len(output_data)}")
-            logger.info(f"Routes: {len(solution.get('routes', []))}")
+            # logger.info(f"Output generated successfully: {output_file}")
+            # logger.info(f"Total rows: {len(output_data)}")
+            # logger.info(f"Routes: {len(solution.get('routes', []))}")
+            return True
             
         except Exception as e:
             logger.error(f"Error generating output: {e}")
             import traceback
             traceback.print_exc()
+            return False
 
 def minutes_to_datetime_str(minutes: int) -> str:
     """Convert minutes since midnight to datetime string"""

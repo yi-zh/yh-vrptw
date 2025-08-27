@@ -6,6 +6,9 @@ import random
 import traceback
 from copy import deepcopy
 import numpy as np
+import matplotlib.pyplot as plt
+from pathlib import Path
+import pandas as pd
 
 # 继承已有数据类
 from main import Customer, Vehicle, Location, VRPTWSolver, VRPTWProblem, logger, DataManager, OutputManager, \
@@ -24,8 +27,8 @@ MAX_INVALID_RATIO = 0
 class TabuSearchSolver(VRPTWSolver):
     """禁忌搜索算法求解VRPTW问题"""
 
-    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 1000,
-                 neighborhood_size: int = 50, aspiration_value: float = 0.1, enable_penalty=False, penalty_coeff={}):
+    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 10000,
+                 neighborhood_size: int = 100, aspiration_value: float = 0.1, enable_penalty=False, penalty_coeff={}, enable_plotting=True):
         super().__init__(problem)
         self.tabu_list = []  # 禁忌表
         self.tabu_size = tabu_size  # 禁忌表大小
@@ -43,6 +46,93 @@ class TabuSearchSolver(VRPTWSolver):
         self.enable_penalty = enable_penalty
         self.penalty_coeff = penalty_coeff
         self.print_details = True
+        self.enable_plotting = enable_plotting
+        self.cost_history = []
+        self.iteration_history = []
+        self.fig = None
+        self.ax = None
+        self.line = None
+        self.current_annotation = None  # Track current annotation
+        
+        # Intermediate output variables
+        self.save_intermediate = True
+        self.improvement_count = 0
+        self.output_manager = OutputManager()
+        self.data_manager = problem.data_manager
+
+    def _setup_plot(self):
+        """Setup the dynamic plot for cost visualization"""
+        if not self.enable_plotting:
+            return
+            
+        plt.ion()  # Turn on interactive mode
+        self.fig, self.ax = plt.subplots(figsize=(10, 6))
+        self.ax.set_xlabel('Iteration')
+        self.ax.set_ylabel('Best Cost')
+        self.ax.set_title('Tabu Search - Best Cost Evolution')
+        self.ax.grid(True, alpha=0.3)
+        
+        # Initialize empty line
+        self.line, = self.ax.plot([], [], 'b-', linewidth=2, label='Best Cost')
+        self.ax.legend()
+        
+        plt.show(block=False)
+        plt.pause(0.001)
+    
+    def _update_plot(self, iteration: int, cost: float):
+        """Update the dynamic plot with new cost data"""
+        if not self.enable_plotting or self.fig is None:
+            return
+            
+        self.cost_history.append(cost)
+        self.iteration_history.append(iteration)
+        
+        # Update line data
+        self.line.set_data(self.iteration_history, self.cost_history)
+        
+        # Adjust axes limits
+        self.ax.relim()
+        self.ax.autoscale_view()
+        
+        # Add annotation for current best (only for improvements)
+        if len(self.cost_history) > 1 and cost < min(self.cost_history[:-1]):
+            # Clear previous annotations
+            if self.current_annotation:
+                self.current_annotation.remove()
+                self.current_annotation = None
+            
+            self.current_annotation = self.ax.annotate(f'Best: {cost:.2f}', 
+                           xy=(iteration, cost), 
+                           xytext=(10, 10), 
+                           textcoords='offset points',
+                           bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7),
+                           arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
+        
+        plt.draw()
+        plt.pause(0.001)
+    
+    def _close_plot(self):
+        """Close the plot window"""
+        if self.enable_plotting and self.fig is not None:
+            try:
+                # Generate unique filename with timestamp
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                # Ensure output directory exists
+                output_path = Path("csv_data/output/tabu_search_cost_evolution_{}.png".format(timestamp))
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Save the figure
+                self.fig.savefig(output_path, dpi=300, bbox_inches='tight', 
+                               facecolor='white', edgecolor='none')
+                logger.info(f"📊 Plot saved as: {output_path}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to save plot: {e}")
+            
+            finally:
+                plt.ioff()  # Turn off interactive mode
+                plt.close(self.fig)
 
     def solve(self) -> Dict[str, Any]:
         """实现禁忌搜索算法"""
@@ -58,13 +148,30 @@ class TabuSearchSolver(VRPTWSolver):
             warehouse = self._get_warehouse_location()
             excluded_routes = []
             excluded_routes_indices = []
-            for cus_id, customer in self.customer_map.items():
+            
+            # 收集当前解中实际存在的所有客户ID
+            current_customer_ids = set()
+            for route in self.current_solution:
+                current_customer_ids.update(route['customers'])
+            
+            # 只检查当前解中实际存在的客户
+            for cus_id in current_customer_ids:
+                # 获取客户信息（可能是原始客户或唯一客户）
+                if cus_id in self.customer_map:
+                    customer = self.customer_map[cus_id]
+                else:
+                    logger.warning(f"客户ID {cus_id} 不在customer_map中")
+                    continue
+                    
                 tw_end = self._parse_time(customer.time_window_end)
                 distance = calculate_distance(warehouse, customer)
-                # travel_time = self._calculate_travel_time(distance)
                 travel_time = calculate_travel_time(distance, warehouse, customer)
-                if travel_time > tw_end or travel_time > 60*3:
+                
+                if travel_time > tw_end or travel_time > 60*2:
                     selected_route, index = self._find_route_containing(self.current_solution, cus_id)
+                    if selected_route is None or index is None:
+                        logger.error(f"在初始解中未找到包含客户{cus_id}:{customer.name}的线路")
+                        continue
                     excluded_routes.append(selected_route)
                     excluded_routes_indices.append(index)
                     logger.info(f"剔除过远线路-客户{customer.name}：距离{distance}km, 用时{travel_time}min")
@@ -79,7 +186,8 @@ class TabuSearchSolver(VRPTWSolver):
             self.best_score = self.best_cost + self.best_penalty
             self.current_score = self.best_score
             logger.info(f"Initial solution，cost： {self.best_cost:.2f}, penalty：{self.best_penalty:.2f}")
-
+            self._setup_plot()
+            self._update_plot(0, self.best_cost)
 
             # 2. 迭代搜索
             for iter in range(self.max_iter):
@@ -109,14 +217,24 @@ class TabuSearchSolver(VRPTWSolver):
                         self.best_solution = deepcopy(best_neighbor)
                         self.best_cost = best_neighbor_cost
                         logger.info(f"*迭代 {iter}: 找到更优解，成本 {self.best_cost:.2f}")
+                        # Update plot every iteration with current best cost
+                        self._update_plot(iter + 1, self.best_cost)
+                        # Save intermediate solution
+                        self._save_intermediate_solution(iter + 1, self.best_cost, excluded_routes=excluded_routes)
                     elif self.print_details:
                         logger.info(f"迭代 {iter}: 未找到更优解，成本 {self.best_cost:.2f}")
+
                 else:
                     if best_neighbor_cost + best_neighbor_penalty < self.best_score:
                         self.best_solution = deepcopy(best_neighbor)
                         self.best_score = best_neighbor_cost + best_neighbor_penalty
+                        self.best_cost = best_neighbor_cost  # Update best_cost for plotting
                         logger.info(f"*迭代 {iter}: 找到更优解，成本： {best_neighbor_cost:.2f},"
                                     f" 惩罚值：{best_neighbor_penalty:.2f}")
+                        # Update plot every iteration with current best cost
+                        self._update_plot(iter + 1, self.best_cost)
+                        # Save intermediate solution
+                        self._save_intermediate_solution(iter + 1, best_neighbor_cost, best_neighbor_penalty, excluded_routes)
                     elif self.print_details:
                         logger.info(f"迭代 {iter}: 未找到更优解，成本： {best_neighbor_cost:.2f},"
                                     f" 惩罚值：{best_neighbor_penalty:.2f}")
@@ -134,6 +252,7 @@ class TabuSearchSolver(VRPTWSolver):
             logger.info(f"invalid route cnt of the best solution is {sum(i.get('invalid', False) for i in self.best_solution)}")
 
             self.solution = solution
+            self._close_plot()
             return solution
 
         except Exception as e:
@@ -153,18 +272,36 @@ class TabuSearchSolver(VRPTWSolver):
         for i in range(len(routes)):
             if customer_id in routes[i]['customers']:
                 return routes[i], i
-        return None
+        return None, None
 
     def _establish_info_map(self):
-        self.vehicle_map = self.saving_solver.vehicle_map
-        self.customer_map = self.saving_solver.customer_map
-        self.product_map = self.saving_solver.product_map
-        # for vehicle in self.problem.data_manager.vehicles:
-        #     self.vehicle_map[vehicle.id] = vehicle
-        # for customer in self.problem.data_manager.customers:
-        #     self.customer_map[customer.id] = customer
-        # for product in self.problem.data_manager.products:
-        #     self.product_map[product.id] = product
+        """建立信息映射，直接从数据管理器创建"""
+        try:
+            # 如果saving_solver已经有映射，优先使用
+            if hasattr(self.saving_solver, 'vehicle_map') and self.saving_solver.vehicle_map:
+                self.vehicle_map = self.saving_solver.vehicle_map
+                self.customer_map = self.saving_solver.customer_map
+                self.product_map = self.saving_solver.product_map
+            else:
+                # 否则直接从数据管理器创建映射
+                self.vehicle_map = {}
+                self.customer_map = {}
+                self.product_map = {}
+                
+                for vehicle in self.problem.data_manager.vehicles:
+                    self.vehicle_map[vehicle.id] = vehicle
+                for customer in self.problem.data_manager.customers:
+                    self.customer_map[customer.id] = customer
+                for product in self.problem.data_manager.products:
+                    self.product_map[product.id] = product
+                    
+                # logger.info(f"建立信息映射: {len(self.vehicle_map)}辆车, {len(self.customer_map)}个客户, {len(self.product_map)}个产品")
+        except Exception as e:
+            logger.error(f"建立信息映射失败: {e}")
+            # 创建空映射作为后备
+            self.vehicle_map = {}
+            self.customer_map = {}
+            self.product_map = {}
 
     def _calculate_interval_distance_and_time_per_route(self, route):
         route['interval_distance'] = {}
@@ -189,6 +326,11 @@ class TabuSearchSolver(VRPTWSolver):
     def _generate_initial_solution(self):
         """生成初始解（可以使用节约算法的结果作为初始解）"""
         # 使用节约算法生成初始解
+        # self._load_previous_solution()
+        self._load_previous_solution()
+        if self.current_solution:
+            self.best_cost = sum([route['cost'] for route in self.current_solution])
+            return
         savings_solution = self.saving_solver.solve()
         self._establish_info_map()
 
@@ -200,6 +342,136 @@ class TabuSearchSolver(VRPTWSolver):
             self.best_cost = savings_solution['total_cost']
         else:
             raise Exception("Saving algorithm fails. No available initial solution!")
+
+    def _load_previous_solution(self):
+        """从previous_solution.csv加载之前的解"""
+        try:
+            previous_solution_path = Path("csv_data/output/previous_solution.csv")
+            if not previous_solution_path.exists():
+                logger.info("未找到csv_data/output/previous_solution.csv文件")
+                return False
+            
+            # 读取CSV文件
+            df = pd.read_csv(previous_solution_path, encoding='utf-8-sig')
+            if df.empty:
+                logger.info("previous_solution.csv文件为空")
+                return False
+            
+            # 确保建立信息映射
+            self._establish_info_map()
+            
+            # 按线路名称分组重建路径
+            routes = {}
+            
+            for row_idx, row in df.iterrows():
+                route_name = row['线路名称']
+                sales_order = row['销售订单']
+                
+                # 找到对应的客户ID作为模板
+                template_customer_id = None
+                
+                # 首先尝试精确匹配销售订单
+                for cid, customer in self.customer_map.items():
+                    if customer.sales_order == sales_order:
+                        template_customer_id = cid
+                        break
+                
+                # 如果没有找到销售订单匹配，尝试匹配客户名称
+                if not template_customer_id:
+                    for cid, customer in self.customer_map.items():
+                        if customer.name == row['送货站点名称']:
+                            template_customer_id = cid
+                            break
+                
+                if not template_customer_id:
+                    logger.warning(f"未找到客户: {row['送货站点名称']}, 销售订单: {sales_order}, 路线: {route_name}")
+                    continue
+                
+                # 为每个CSV行创建唯一的客户ID
+                # 这样即使是同一个客户的多次配送，也会被视为不同的配送任务
+                unique_customer_id = f"{template_customer_id}_{route_name}_{row_idx}"
+                
+                # 确保路线存在
+                if route_name not in routes:
+                    routes[route_name] = {
+                        'vehicle_id': route_name.replace('线', ''),
+                        'vehicle_type': self._map_vehicle_type(row['车型']),
+                        'customers': [],
+                        'sequence': [],
+                        'arrival_times': {},
+                        'departure_times': {},
+                        'load_weight': 0,
+                        'load_volume': 0,
+                        'total_distance': row['线路单边里程'] if pd.notna(row['线路单边里程']) and row['线路单边里程'] != '' else 0,
+                        'total_time': row['线路时间(单边)'] if pd.notna(row['线路时间(单边)']) and row['线路时间(单边)'] != '' else 0,
+                        'cost': 0,
+                        'feasible': True,
+                        'invalid': False,
+                        'district': set(),  # 初始化为集合，后面转换为列表
+                        'time_slack': 0,
+                        'height_restricted': False,
+                        'single_vehicle': False  # 添加缺失的single_vehicle字段
+                    }
+                
+                # 添加唯一客户ID到路径
+                route = routes[route_name]
+                route['customers'].append(unique_customer_id)
+                route['sequence'].append(unique_customer_id)
+                
+                # 解析时间
+                arrival_time_str = str(row['预计送达时间'])
+                departure_time_str = str(row['预计离开时间'])
+                
+                arrival_minutes = self._parse_time_from_datetime_str(arrival_time_str)
+                departure_minutes = self._parse_time_from_datetime_str(departure_time_str)
+                
+                route['arrival_times'][unique_customer_id] = arrival_minutes
+                route['departure_times'][unique_customer_id] = departure_minutes
+                
+                # 使用模板客户的信息计算载重和体积
+                template_customer = self.customer_map[template_customer_id]
+                load = self._calculate_customer_load(template_customer)
+                route['load_weight'] += load['weight']
+                route['load_volume'] += load['volume']
+                
+                # 添加客户所在区域到district集合
+                customer_district = extract_district(template_customer.address)
+                if customer_district:
+                    route['district'].add(customer_district)
+                
+                # 将唯一客户ID映射到原始客户，以便后续使用
+                self.customer_map[unique_customer_id] = template_customer
+            
+            # 转换为列表格式并计算成本
+            self.current_solution = []
+            total_cost = 0
+            
+            for route_name, route_data in routes.items():
+                if route_data['customers']:  # 只添加有客户的路径
+                    # 按配送顺序排序
+                    route_data['customers'].sort(key=lambda cid: df[df['销售订单'] == self.customer_map[cid].sales_order]['配送顺序'].iloc[0])
+                    route_data['sequence'] = ['warehouse'] + route_data['customers'] + ['warehouse']
+                    
+                    # 转换district为列表
+                    route_data['district'] = list(route_data['district'])
+                    
+                    # 计算路径成本
+                    route_cost = self._calculate_route_cost(route_data)
+                    route_data['cost'] = route_cost
+                    total_cost += route_cost
+                    
+                    self.current_solution.append(route_data)
+            
+            self.best_cost = total_cost
+            logger.info(f"🚀 成功加载之前的解: {len(self.current_solution)}条路径, 总成本: {total_cost:.2f}")
+            logger.info(f"加载的客户总数: {sum(len(route['customers']) for route in self.current_solution)}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"加载之前解失败: {e}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
+            return False
 
     # def _calculate_solution_penalty_value(self, routes):
     #     penalty_value = {
@@ -245,10 +517,7 @@ class TabuSearchSolver(VRPTWSolver):
                 penalty_value[OVER_LOADING_85] += 1
             elif load_ratio > 0.9:
                 penalty_value[OVER_LOADING_90] += 1
-
-
         return penalty_value
-
 
     def _calculate_solution_penalty(self, routes):
         penalty_value = self._calculate_solution_penalty_value(routes)
@@ -478,8 +747,8 @@ class TabuSearchSolver(VRPTWSolver):
         departure_times = {}
         district = set()
         customer_num = len(route['customers'])
-        for cust_id in route['customers']:
-            customer = self.customer_map[cust_id]
+        for cus_id in route['customers']:
+            customer = self.customer_map[cus_id]
             if customer.delivery_type == "单点配送" and customer_num >= 2:
                 route['feasible'] = False
                 return
@@ -691,6 +960,48 @@ class TabuSearchSolver(VRPTWSolver):
 
         return "|".join(sorted(route_strs))  # 排序确保顺序不影响哈希
 
+    def _save_intermediate_solution(self, iteration: int, cost: float, penalty: float = None, excluded_routes: List[Dict] = []):
+        """Save intermediate solution"""
+        intermediate_solution = deepcopy(self.best_solution)
+        intermediate_solution = intermediate_solution + excluded_routes
+        self._calculate_interval_distance_and_time(intermediate_solution)
+        
+        # Generate unique filename with timestamp
+        self.improvement_count += 1
+        timestamp = datetime.now().strftime("%H%M%S")
+        
+        if penalty is not None:
+            filename = f"csv_data/output/tabu_iter{iteration:03d}_cost{cost:.1f}_penalty{penalty:.1f}_{timestamp}.csv"
+            solution = {
+                'algorithm': 'Tabu Search',
+                'routes': intermediate_solution,
+                'total_cost': cost,
+                'penalty': penalty,
+                'vehicles_used': len(intermediate_solution),
+                'status': 'solved'
+            }
+        else:
+            filename = f"csv_data/output/tabu_iter{iteration:03d}_cost{cost:.1f}_{timestamp}.csv"
+            solution = {
+                'algorithm': 'Tabu Search',
+                'routes': intermediate_solution,
+                'total_cost': cost,
+                'vehicles_used': len(intermediate_solution),
+                'status': 'solved'
+            }
+
+        # logger.info(f"Saving intermediate solution at iteration {iteration}...")
+        
+        # Use correct parameters for generate_output
+        success = self.output_manager.generate_output(solution, self.data_manager, filename)
+        
+        # if success:
+        #     logger.info(f"✅ Successfully saved intermediate solution: {filename}")
+        # else:
+        #     logger.warning(f"❌ Failed to save intermediate solution: {filename}")
+            
+        return success
+
     # 辅助方法（与节约算法中的类似）
     def _get_warehouse_location(self) -> Location:
         for loc in self.problem.data_manager.locations:
@@ -722,8 +1033,40 @@ class TabuSearchSolver(VRPTWSolver):
     def _parse_time(self, time_str: str) -> float:
         return parse_time(time_str)
 
+    def _parse_time_from_datetime_str(self, datetime_str: str) -> float:
+        """从CSV中的日期时间字符串解析出分钟数"""
+        try:
+            # 处理可能的空值或无效值
+            if not datetime_str or datetime_str == 'nan' or datetime_str == 'None':
+                return 0.0
+            
+            # 使用现有的parse_time函数，它已经支持 "YYYY-MM-DD HH:MM:SS" 格式
+            return parse_time(str(datetime_str))
+        except Exception as e:
+            logger.warning(f"解析时间字符串失败: {datetime_str}, 错误: {e}")
+            return 0.0
+
     def _calculate_transportation_cost(self, route: Dict[str, Any]):
         return calculate_transportation_cost(route, self.problem.data_manager.vehicle_costs)
+
+    def _calculate_route_cost(self, route: Dict[str, Any]) -> float:
+        """计算路径的总成本"""
+        try:
+            # 使用现有的运输成本计算方法
+            return self._calculate_transportation_cost(route)
+        except Exception as e:
+            logger.warning(f"计算路径成本失败: {e}")
+            return 0.0
+
+    def _map_vehicle_type(self, chinese_vehicle_type: str) -> str:
+        """将中文车型名称映射为内部车型代码"""
+        vehicle_type_mapping = {
+            "4.2m厢式货车": "4.2m厢式货车",
+            "大型面包车": "大型面包车",
+            "小型面包车": "小型面包车",
+            "中型面包车": "中型面包车"
+        }
+        return vehicle_type_mapping.get(chinese_vehicle_type, chinese_vehicle_type)
 
     def _time_aware_swap(self, solution: List[Dict]) -> Optional[List[Dict]]:
         """基于时间窗兼容性的智能客户交换"""
@@ -1014,7 +1357,7 @@ class VRPTWMain:
                 TIME_SLACK: 10,
                 INVALID_ROUTE: 10000
             }
-            solver = TabuSearchSolver(self.problem, enable_penalty=True, penalty_coeff=penalty_coeff)
+            solver = TabuSearchSolver(self.problem, enable_penalty=True, penalty_coeff=penalty_coeff, enable_plotting=True)
             solution = solver.solve()
 
             # logger.info(solution)
