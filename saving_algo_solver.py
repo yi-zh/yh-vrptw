@@ -320,15 +320,15 @@ def get_service_time(customer: Customer, skip_customer_map: {}) -> float:
     #todo：多个子客户在一个线路的时候方量需要累加，但这里目前我们直接叠加简化处理
     if delivery_method == "信任交接":
         if volume <= 500:
-            handover_time = 15 if skip_customer_map.get(customer.sub_customer_code, False) else 0
+            handover_time = 0 if skip_customer_map.get(customer.sub_customer_code, False) else 15
         else:
-            handover_time = (15 if skip_customer_map.get(customer.sub_customer_code, False) else 0) + (volume-500) / 1000 * 10
+            handover_time = (0 if skip_customer_map.get(customer.sub_customer_code, False) else 15) + (volume-500) / 1000 * 10
     else:
     # elif delivery_method == "称重点数":
         if volume <= 500:
-            handover_time = (20 if skip_customer_map.get(customer.sub_customer_code, False) else 0) + volume / 1000 * 15
+            handover_time = (0 if skip_customer_map.get(customer.sub_customer_code, False) else 20) + volume / 1000 * 15
         else:
-            handover_time = (20 if skip_customer_map.get(customer.sub_customer_code, False) else 0) + (volume-500) / 1000 * 10 + volume / 1000 * 15
+            handover_time = (0 if skip_customer_map.get(customer.sub_customer_code, False) else 20) + (volume-500) / 1000 * 10 + volume / 1000 * 15
     # else:
     #     raise ValueError(f"Order {customer.id} 的交接方式错误。its way is {customer.delivery_method}")
 
@@ -887,7 +887,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             for vehicle in self.problem.data_manager.vehicles:
                 if vehicle.id in selected_vehicles:
                     continue
-                if route['height_restricted'] and vehicle.vehicle_type.startswith("4.2"):
+                if route['height_restricted'] and vehicle.vehicle_type.startswith("4.2") and route['load_volume'] < 6000:
                     continue
                 # todo 暂时只考虑体积约束
                 # if vehicle.capacity_weight >= route['load_weight'] and vehicle.capacity_volume >= route['load_volume']:、
@@ -903,6 +903,9 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 selected_vehicles.add(route['vehicle_id'])
             else:
                 self.unassigned = True
+                # for vehicle in self.problem.data_manager.vehicles:
+                #     if vehicle.id not in selected_vehicles:
+                #         logger.info(f"剩余{vehicle.id}车-{vehicle.vehicle_type}可用")
                 logger.warning(f"没有合适的车辆满足路径需求")
                 continue
 
