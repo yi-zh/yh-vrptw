@@ -124,7 +124,7 @@ def _load_single_matrix(file_path):
                     dest = str(row[dest_col]).strip()
 
                     distance = float(row[distance_col]) if distance_col and pd.notna(row[distance_col]) else None
-                    duration = 0.9*float(row[duration_col]) if duration_col and pd.notna(row[duration_col]) else None
+                    duration = 0.7*float(row[duration_col]) if duration_col and pd.notna(row[duration_col]) else None
 
                     # if distance is None or duration is None:
                     #     print("?")
@@ -308,9 +308,10 @@ def extract_district(address: str) -> str:
     return ""  # 未找到区名时返回空字符串
 
 
-def get_service_time(customer: Customer) -> float:
+def get_service_time(customer: Customer, skip_customer_map: {}) -> float:
     """获取客户的服务时间（分钟）"""
-    addition_time = customer.extra_work_time
+    addition_time = 0 if skip_customer_map.get(customer.sub_customer_code, False) else customer.extra_work_time
+    skip_customer_map[customer.sub_customer_code] = True
     volume = customer.volume
     delivery_method = customer.delivery_method if (customer.delivery_method is not None
                                                    or customer.delivery_method != ""
@@ -515,6 +516,10 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         """初始化路径：每个客户单独一条路径（仓库-客户-仓库）"""
         warehouse = self._get_warehouse_location()
 
+        skip_service_map = {}
+        for customer in self.problem.data_manager.customers:
+            skip_service_map[customer.sub_customer_code] = False
+
         for customer in self.problem.data_manager.customers:
             # 计算客户需求
             load = self._calculate_customer_load(customer)
@@ -532,7 +537,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
 
             # 计算时间
             travel_time = calculate_travel_time(to_customer, warehouse, customer)
-            service_time = get_service_time(customer)
+            service_time = get_service_time(customer, skip_service_map)
             return_time = calculate_travel_time(return_distance, customer, warehouse)
 
             # 时间窗处理
@@ -771,7 +776,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         new_customers = route_i['customers'] + route_j['customers']
 
         current_loc = self.customer_map[new_customers[0]]
-        service_time = get_service_time(current_loc)
+        service_time = get_service_time(current_loc, {})
 
         first_distance = calculate_distance(self._get_warehouse_location(), self.customer_map[new_customers[0]], suitable_vehicle_type)
         first_travel_time = calculate_travel_time(first_distance, self._get_warehouse_location(), self.customer_map[new_customers[0]],
@@ -781,6 +786,9 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         current_time = tw_start + service_time
         isvio = 0
         totvio = 0.0
+        skip_service_map = {}
+        for cust_id in new_customers[1:]:
+            skip_service_map[self.customer_map[cust_id].sub_customer_code] = False
         for cust_id in new_customers[1:]:
             customer = self.customer_map[cust_id]
 
@@ -802,7 +810,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                     isvio = 1
 
             # 计算离开时间
-            service_time = get_service_time(customer)
+            service_time = get_service_time(customer, skip_service_map)
             departure_time = effective_arrival + service_time
 
             # 更新
@@ -904,11 +912,14 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             first_travel_time = calculate_travel_time(first_distance, self._get_warehouse_location(), self.customer_map[new_customers[0]], vehicle_type)
             new_arrival_times[new_customers[0]] = parse_time(self.customer_map[new_customers[0]].time_window_start)
             start_work_time = new_arrival_times[new_customers[0]] - first_travel_time
-            first_service_time = get_service_time(self.customer_map[new_customers[0]])
+            first_service_time = get_service_time(self.customer_map[new_customers[0]], {})
             new_departure_times[new_customers[0]] = new_arrival_times[new_customers[0]] + first_service_time
 
             current_loc = self.customer_map[new_customers[0]]
             current_time = new_departure_times[new_customers[0]]
+            skip_customer_map = {}
+            for cust_id in new_customers[1:]:
+                skip_customer_map[self.customer_map[cust_id].sub_customer_code] = False
             for cust_id in new_customers[1:]:
                 customer = self.customer_map[cust_id]
 
@@ -930,7 +941,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
                 new_arrival_times[customer.id] = effective_arrival
 
                 # 计算离开时间
-                service_time = get_service_time(customer)
+                service_time = get_service_time(customer, skip_customer_map)
                 departure_time = effective_arrival + service_time
 
                 new_departure_times[customer.id] = departure_time

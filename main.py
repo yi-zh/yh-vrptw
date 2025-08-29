@@ -180,7 +180,7 @@ class DataManager:
                                 'sub_customer_code': sub_code,
                                 'sub_customer_name': sub_name
                             }
-                            
+
                             # Store special rules for this sub customer
                             customer_rules[sub_code] = {
                                 'delivery_method': str(row['交接方式']).strip() if pd.notna(row['交接方式']) else "称重点数",
@@ -1269,8 +1269,12 @@ class OutputManager:
                     "Default": "4.2米"
                 }
                 chinese_vehicle_type = vehicle_type_mapping.get(vehicle_type, "4.2米")
-                
-                route_name = f"{vehicle_id}线"
+
+                if route['cost'] > 1000:
+                    route_name = f"E{vehicle_id}线"
+                else:
+                    route_name = f"{vehicle_id}线"
+
                 total_route_volume = route.get('load_volume', 0)
                 total_route_distance = route.get('total_distance', 0)
                 total_route_time = route.get('total_time', 0)
@@ -1286,8 +1290,8 @@ class OutputManager:
 
                     # Find customer details
                     customer = next((c for c in data_manager.customers
-                                   if c.id == customer_id or c.id == customer_id.split("_")[0]), None)
-                    
+                                   if c.id == customer_id or c.id == customer_id.split("_")[0] or c.id == customer_id.split("-")[0]), None)
+
                     if not customer:
                         continue
                     
@@ -1386,7 +1390,11 @@ class OutputManager:
                 chinese_vehicle_type = vehicle_type_mapping.get(vehicle_type, "4.2m厢式货车")
                 
                 # Generate a route number (运单号)
-                route_number = f"{vehicle_id}"
+                # route_number = f"E{vehicle_id}线"
+                if route['cost'] > 1000:
+                    route_number = f"E{vehicle_id}线"
+                else:
+                    route_number = f"{vehicle_id}线"
                 
                 for i in range(len(route['sequence'])):
                     customer_id = route['sequence'][i]
@@ -1395,7 +1403,7 @@ class OutputManager:
 
                     # Find customer details
                     customer = next((c for c in data_manager.customers
-                                   if c.id == customer_id or c.id == customer_id.split("_")[0]), None)
+                                   if c.id == customer_id or c.id == customer_id.split("_")[0] or c.id == customer_id.split("-")[0]), None)
                     
                     if not customer:
                         continue

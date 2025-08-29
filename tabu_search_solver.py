@@ -27,7 +27,7 @@ MAX_INVALID_RATIO = 0
 class TabuSearchSolver(VRPTWSolver):
     """禁忌搜索算法求解VRPTW问题"""
 
-    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 5000,
+    def __init__(self, problem: VRPTWProblem, tabu_size: int = 50, max_iter: int = 3000,
                  neighborhood_size: int = 100, aspiration_value: float = 0.1, enable_penalty=False, penalty_coeff={}, enable_plotting=True):
         super().__init__(problem)
         self.tabu_list = []  # 禁忌表
@@ -363,7 +363,11 @@ class TabuSearchSolver(VRPTWSolver):
             routes = {}
             
             for row_idx, row in df.iterrows():
-                route_name = row['线路名称']
+                if 'E' in row['线路名称']:
+                    route_name = row['线路名称'].split('E')[1]
+                else:
+                    route_name = row['线路名称']
+
                 sales_order = row['销售订单']
                 
                 # 找到对应的客户ID作为模板
@@ -746,14 +750,16 @@ class TabuSearchSolver(VRPTWSolver):
         departure_times = {}
         district = set()
         customer_num = len(route['customers'])
+        skip_customer_map = {}
         for cus_id in route['customers']:
             customer = self.customer_map[cus_id]
+            skip_customer_map[customer.sub_customer_code] = False
             if customer.delivery_type == "单点配送" and customer_num >= 2:
                 route['feasible'] = False
                 return
 
         current_loc = self.customer_map[route['customers'][0]]
-        service_time = get_service_time(current_loc)
+        service_time = get_service_time(current_loc, skip_customer_map)
 
         first_distance = calculate_distance(self._get_warehouse_location(), self.customer_map[route['customers'][0]], suitable_vehicle_type)
         total_distance += first_distance
@@ -765,6 +771,10 @@ class TabuSearchSolver(VRPTWSolver):
         current_time = tw_start + service_time
         departure_times[route['customers'][0]] = current_time
 
+        skip_customer_map = {}
+        for cust_id in route['customers'][1:]:
+            customer = self.customer_map[cust_id]
+            skip_customer_map[customer.sub_customer_code] = False
         for cust_id in route['customers'][1:]:
             customer = self.customer_map[cust_id]
 
@@ -787,7 +797,7 @@ class TabuSearchSolver(VRPTWSolver):
             district.add(extract_district(customer.address))
 
             # 计算离开时间
-            service_time = get_service_time(customer)
+            service_time = get_service_time(customer, skip_customer_map)
             departure_time = effective_arrival + service_time
 
             # 更新
@@ -1026,8 +1036,8 @@ class TabuSearchSolver(VRPTWSolver):
     # def _calculate_travel_time(self, distance, loc1, loc2) -> float:
     #     return calculate_travel_time(distance, loc1, loc2)
 
-    def _get_service_time(self, customer: Customer) -> float:
-        return get_service_time(customer)
+    def _get_service_time(self, customer: Customer, skip_customer_map: {}) -> float:
+        return get_service_time(customer, skip_customer_map)
 
     def _parse_time(self, time_str: str) -> float:
         return parse_time(time_str)
