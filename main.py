@@ -1282,7 +1282,7 @@ class OutputManager:
                 # Calculate latest departure time from warehouse (route start time)
                 route_start_minutes = route.get('vehicle_work_start_time', 0)
                 latest_departure_time = minutes_to_datetime_str(route_start_minutes)
-                
+
                 for i in range(len(route['sequence'])):
                     customer_id = route['sequence'][i]
                     if customer_id == "warehouse":
@@ -1290,13 +1290,13 @@ class OutputManager:
 
                     # Find customer details
                     customer = next((c for c in data_manager.customers
-                                   if c.id == customer_id or c.id == customer_id.split("_")[0] or c.id == customer_id.split("-")[0]), None)
+                                   if c.id == customer_id or c.id == customer_id.split("_")[0] or c.id == customer_id.split("-")[0] or customer_id.split("_")[0] in c.orders or c.id == "_".join(customer_id.split("_")[0:2])) , None)
 
                     if not customer:
                         continue
                     
                     # Find sales order for this customer - use the actual sales order from CSV
-                    sales_order = customer.sales_order if customer.sales_order else f"OM{customer.id}"
+                    sales_order = customer.sales_order if customer.sales_order else f"OM{customer.sales_order}"
                     
                     # Calculate arrival and departure times
                     arrival_minutes = route['arrival_times'][customer_id]
@@ -1323,7 +1323,7 @@ class OutputManager:
                     
                     row = {
                         '计划出库日期': '2025-06-30',  # Use the date from time windows
-                        '销售订单': sales_order,
+                        '销售订单': ','.join(customer.orders),
                         '送货站点名称': customer.name,
                         '最早收货时间': customer.time_window_start,
                         '最晚收货时间': customer.time_window_end,
@@ -1402,8 +1402,11 @@ class OutputManager:
                         continue
 
                     # Find customer details
+                    # Find customer details
                     customer = next((c for c in data_manager.customers
-                                   if c.id == customer_id or c.id == customer_id.split("_")[0] or c.id == customer_id.split("-")[0]), None)
+                                     if c.id == customer_id or c.id == customer_id.split("_")[0] or c.id ==
+                                     customer_id.split("-")[0] or customer_id.split("_")[
+                                         0] in c.orders or c.id == "_".join(customer_id.split("_")[0:2])), None)
                     
                     if not customer:
                         continue
@@ -1445,7 +1448,8 @@ class OutputManager:
                     
                     new_template_row = {
                         '运单号': route_number,
-                        '订单号': customer.sales_order,
+                        # '订单号': customer.sales_order,
+                        '订单号': ','.join(customer.orders),
                         '配送顺序': delivery_order,
                         '串点': '-',  # Default value
                         '子客户编码': getattr(customer, 'sub_customer_code', customer.id),

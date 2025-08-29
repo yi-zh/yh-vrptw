@@ -368,7 +368,8 @@ class TabuSearchSolver(VRPTWSolver):
                 else:
                     route_name = row['线路名称']
 
-                sales_order = row['销售订单']
+                orders = row['销售订单'].split(',')
+                sales_order = orders[0]
                 
                 # 找到对应的客户ID作为模板
                 template_customer_id = None
@@ -393,7 +394,7 @@ class TabuSearchSolver(VRPTWSolver):
                 # 为每个CSV行创建唯一的客户ID
                 # 这样即使是同一个客户的多次配送，也会被视为不同的配送任务
                 unique_customer_id = f"{template_customer_id}_{route_name}_{row_idx}"
-                
+
                 # 确保路线存在
                 if route_name not in routes:
                     routes[route_name] = {
@@ -452,7 +453,8 @@ class TabuSearchSolver(VRPTWSolver):
             for route_name, route_data in routes.items():
                 if route_data['customers']:  # 只添加有客户的路径
                     # 按配送顺序排序
-                    route_data['customers'].sort(key=lambda cid: df[df['销售订单'] == self.customer_map[cid].sales_order]['配送顺序'].iloc[0])
+                    # route_data['customers'].sort(key=lambda cid: df[df['销售订单'] == self.customer_map[cid].sales_order]['配送顺序'].iloc[0])
+                    route_data['customers'].sort(key=lambda cid: df[df['销售订单'].str.contains(self.customer_map[cid].sales_order, na=False)]['配送顺序'].iloc[0])
                     route_data['sequence'] = ['warehouse'] + route_data['customers']# + ['warehouse']
                     
                     # 转换district为列表
@@ -872,7 +874,7 @@ class TabuSearchSolver(VRPTWSolver):
             for vehicle in self.problem.data_manager.vehicles:
                 if vehicle.id in selected_vehicles:
                     continue
-                if route['height_restricted'] and vehicle.vehicle_type.startswith("4.2"):
+                if route['height_restricted'] and vehicle.vehicle_type.startswith("4.2") and route['load_volume'] < 6000:
                     continue
                 # todo 暂时只考虑体积约束
                 # if vehicle.capacity_weight >= route['load_weight'] and vehicle.capacity_volume >= route['load_volume']:、
