@@ -6,6 +6,8 @@ import random
 import traceback
 from copy import deepcopy
 import numpy as np
+import matplotlib
+matplotlib.use("MACOSX")
 import matplotlib.pyplot as plt
 from pathlib import Path
 import pandas as pd
