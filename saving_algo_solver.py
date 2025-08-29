@@ -310,26 +310,31 @@ def extract_district(address: str) -> str:
 
 def get_service_time(customer: Customer, skip_customer_map: {}) -> float:
     """获取客户的服务时间（分钟）"""
+    total_time = 0
     addition_time = 0 if skip_customer_map.get(customer.sub_customer_code, False) else customer.extra_work_time
-    skip_customer_map[customer.sub_customer_code] = True
     volume = customer.volume
     delivery_method = customer.delivery_method if (customer.delivery_method is not None
                                                    or customer.delivery_method != ""
                                                    or len(customer.delivery_method) > 0) else "称重点数"
+
+    #todo：多个子客户在一个线路的时候方量需要累加，但这里目前我们直接叠加简化处理
     if delivery_method == "信任交接":
         if volume <= 500:
-            return 15 + addition_time
+            handover_time = 15 if skip_customer_map.get(customer.sub_customer_code, False) else 0
         else:
-            return 15 + (volume-500) / 1000 * 10 + addition_time
+            handover_time = (15 if skip_customer_map.get(customer.sub_customer_code, False) else 0) + (volume-500) / 1000 * 10
     else:
     # elif delivery_method == "称重点数":
         if volume <= 500:
-            return 20 + volume / 1000 * 15 + addition_time
+            handover_time = (20 if skip_customer_map.get(customer.sub_customer_code, False) else 0) + volume / 1000 * 15
         else:
-            return 20 + (volume-500) / 1000 * 10 + volume / 1000 * 15 + addition_time
+            handover_time = (20 if skip_customer_map.get(customer.sub_customer_code, False) else 0) + (volume-500) / 1000 * 10 + volume / 1000 * 15
     # else:
     #     raise ValueError(f"Order {customer.id} 的交接方式错误。its way is {customer.delivery_method}")
 
+    skip_customer_map[customer.sub_customer_code] = True
+    total_time = handover_time + addition_time
+    return total_time
 
 # def calculate_distance(loc1, loc2) -> float:
 #     """计算两个位置之间的距离（使用已有方法或实现）"""
