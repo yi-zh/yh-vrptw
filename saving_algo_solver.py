@@ -887,7 +887,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
             for vehicle in self.problem.data_manager.vehicles:
                 if vehicle.id in selected_vehicles:
                     continue
-                if route['height_restricted'] and vehicle.vehicle_type.startswith("4.2") and route['load_volume'] < 6000:
+                if route['height_restricted'] and vehicle.vehicle_type.startswith("4.2") and route['load_volume'] < 4000:
                     continue
                 # todo 暂时只考虑体积约束
                 # if vehicle.capacity_weight >= route['load_weight'] and vehicle.capacity_volume >= route['load_volume']:、
