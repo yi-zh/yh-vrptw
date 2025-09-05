@@ -43,14 +43,14 @@ def load_routes_matrix():
     
     try:
         # Load regular routes matrix
-        routes_file = Path("csv_data/input/route_matrix-10.csv")
+        routes_file = Path("csv_data/input_0822/route_matrix-10.csv")
         if routes_file.exists():
             print(f"Loading regular routes matrix from {routes_file.name}...")
             regular_matrix = _load_single_matrix(routes_file)
         else:
             print(f"Regular routes matrix file not found: {routes_file}")
 
-        routes_file = Path("csv_data/input/route_matrix-11.csv")
+        routes_file = Path("csv_data/input_0822/route_matrix-11.csv")
         if routes_file.exists():
             print(f"Loading regular routes matrix from {routes_file.name}...")
             regular_matrix_2 = _load_single_matrix(routes_file)
@@ -67,7 +67,7 @@ def load_routes_matrix():
                 continue
 
         # Load 4.2m vehicle routes matrix
-        routes_42_file = Path("csv_data/input/route_matrix_42-11.csv")
+        routes_42_file = Path("csv_data/input_0822/route_matrix_42-11.csv")
         if routes_42_file.exists():
             print(f"Loading 4.2m vehicle routes matrix from {routes_42_file.name}...")
             matrix_42 = _load_single_matrix(routes_42_file)

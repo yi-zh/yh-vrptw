@@ -403,7 +403,7 @@ class DataManager:
         """Load vehicle data from CSV files"""
         try:
             # Load vehicle information from the converted CSV
-            vehicle_info_file = Path("csv_data/input/车辆商品池_车辆信息.csv")
+            vehicle_info_file = Path("csv_data/input_0822/车辆商品池_车辆信息.csv")
             
             if vehicle_info_file.exists():
                 logger.info(f"Loading vehicle data from: {vehicle_info_file}")
@@ -458,7 +458,7 @@ class DataManager:
     def _load_vehicle_costs(self):
         """Load vehicle cost information"""
         try:
-            cost_file = Path("csv_data/input/车辆商品池_运费计算表.csv")
+            cost_file = Path("csv_data/input_0822/车辆商品池_运费计算表.csv")
             if cost_file.exists():
                 df = pd.read_csv(cost_file, encoding='utf-8-sig')
                 logger.info("Loaded vehicle cost data")
@@ -473,7 +473,7 @@ class DataManager:
     def _load_service_times(self):
         """Load service time information"""
         try:
-            service_file = Path("csv_data/input/车辆商品池_卸货时间.csv")
+            service_file = Path("csv_data/input_0822/车辆商品池_卸货时间.csv")
             if service_file.exists():
                 df = pd.read_csv(service_file, encoding='utf-8-sig')
                 logger.info("Loaded service time data")
