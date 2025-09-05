@@ -14,7 +14,8 @@ import pandas as pd
 from main import Customer, Vehicle, Location, VRPTWSolver, VRPTWProblem, logger, DataManager, OutputManager, \
     DataPreprocessor
 from saving_algo_solver import SavingsAlgorithmSolver, calculate_distance, calculate_travel_time, get_service_time, \
-    parse_time, calculate_transportation_cost, calculate_customer_load, extract_district
+    parse_time, calculate_transportation_cost, calculate_customer_load, extract_district, calculate_route_load, \
+    merge_multiple_dicts
 
 ACROSS_DISTRICTS = "acrosss_districts"
 OVER_LOADING_85 = "over_loading_85"
@@ -434,7 +435,7 @@ class TabuSearchSolver(VRPTWSolver):
                 
                 # 使用模板客户的信息计算载重和体积
                 template_customer = self.customer_map[template_customer_id]
-                load = self._calculate_customer_load(template_customer)
+                load = calculate_route_load(template_customer.demand, self.product_map)
                 route['load_weight'] += load['weight']
                 route['load_volume'] += load['volume']
                 
@@ -728,13 +729,11 @@ class TabuSearchSolver(VRPTWSolver):
         total_distance = 0
 
         # 重新计算装载信息
-        total_weight = 0.0
-        total_volume = 0.0
-        for cust_id in route['customers']:
-            customer = self.customer_map[cust_id]
-            load = self._calculate_customer_load(customer)
-            total_weight += load['weight']
-            total_volume += load['volume']
+        total_demand = [self.customer_map[one_customer].demand for one_customer in route['customers']]
+        merged_total_demand = merge_multiple_dicts(total_demand)
+        load_result = calculate_route_load(merged_total_demand, self.product_map)
+        total_weight = load_result['weight']
+        total_volume = load_result['volume']
 
         route['load_weight'] = total_weight
         route['load_volume'] = total_volume

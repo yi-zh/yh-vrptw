@@ -437,6 +437,24 @@ def calculate_route_load(demand_info, product_map):
     #todo: 补充装框计算逻辑
     return {'weight': total_weight, 'volume': total_volume}
 
+
+def merge_multiple_dicts(dicts: List[Dict[str, float]]) -> Dict[str, float]:
+    """
+    合并多个字典，相同key的value进行累加
+
+    Args:
+        dicts: 由Dict[str, float]组成的列表
+
+    Returns:
+        合并后的字典，key为所有字典的key的并集，value为对应key的累加和
+    """
+    merged = {}
+    for d in dicts:
+        for key, value in d.items():
+            # 若key已存在则累加，否则初始化为当前value
+            merged[key] = merged.get(key, 0.0) + value
+    return merged
+
 class SavingsAlgorithmSolver(VRPTWSolver):
     """带时间窗的节约算法求解VRPTW问题"""
 
@@ -538,7 +556,7 @@ class SavingsAlgorithmSolver(VRPTWSolver):
 
         for customer in self.problem.data_manager.customers:
             # 计算客户需求
-            load = self._calculate_customer_load(customer)
+            load = calculate_route_load(customer.demand, self.product_map)
             customer.volume = load['volume']
             customer.weight = load['weight']
             district = extract_district(customer.address)
@@ -768,8 +786,13 @@ class SavingsAlgorithmSolver(VRPTWSolver):
 
         """检查两条路径是否可以合并"""
         # 1. 检查车辆容量约束
-        total_weight = route_i['load_weight'] + route_j['load_weight']
-        total_volume = route_i['load_volume'] + route_j['load_volume']
+        total_demand = [self.customer_map[one_customer].demand for one_customer in route_i['customers']]
+        for another_customer in route_j['customers']:
+            total_demand.append(self.customer_map[another_customer].demand)
+        merged_total_demand = merge_multiple_dicts(total_demand)
+        load_result = calculate_route_load(merged_total_demand, self.product_map)
+        total_weight = load_result['weight']
+        total_volume = load_result['volume']
 
         height_restriction = route_i['height_restricted'] and route_j['height_restricted']
 
@@ -856,8 +879,13 @@ class SavingsAlgorithmSolver(VRPTWSolver):
         new_sequence = route_i['sequence'][:-1] + route_j['sequence'][1:]
 
         # 合并装载信息
-        new_weight = route_i['load_weight'] + route_j['load_weight']
-        new_volume = route_i['load_volume'] + route_j['load_volume']
+        total_demand = [self.customer_map[one_customer].demand for one_customer in route_i['customers']]
+        for another_customer in route_j['customers']:
+            total_demand.append(self.customer_map[another_customer].demand)
+        merged_total_demand = merge_multiple_dicts(total_demand)
+        load_result = calculate_route_load(merged_total_demand, self.product_map)
+        new_weight = load_result['weight']
+        new_volume = load_result['volume']
 
         # 合并客户列表
         new_customers = route_i['customers'] + route_j['customers']
