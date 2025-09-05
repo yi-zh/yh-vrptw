@@ -425,7 +425,12 @@ def calculate_customer_load(customer: Customer, product_map):
 
     return {'weight': total_weight, 'volume': total_volume}
 
-def calculate_route_load(product_map):
+
+"""
+demand_info: 线路汇总的所有customer的demand信息。key: product_id, value: the corresponding quantity
+product_map: 每种product相关的细节信息。key: product_id, value：the corresponding class of "Product"
+"""
+def calculate_route_load(demand_info, product_map):
     """计算线路的总重量和总体积需求（含装框逻辑）"""
     total_weight = 0.0
     total_volume = 0.0
