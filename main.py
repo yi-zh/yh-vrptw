@@ -94,6 +94,10 @@ class Product:
     weight_per_unit: float
     volume_per_unit: float
     category: str
+    storage_condition: str = ""
+    category_major: str = ""
+    category_medium: str = ""
+    category_minor: str = ""
 
 @dataclass
 class Location:
@@ -403,7 +407,7 @@ class DataManager:
         """Load vehicle data from CSV files"""
         try:
             # Load vehicle information from the converted CSV
-            vehicle_info_file = Path("csv_data/input/车辆商品池_车辆信息.csv")
+            vehicle_info_file = Path("csv_data/input_0822/车辆商品池_车辆信息.csv")
             
             if vehicle_info_file.exists():
                 logger.info(f"Loading vehicle data from: {vehicle_info_file}")
@@ -458,7 +462,7 @@ class DataManager:
     def _load_vehicle_costs(self):
         """Load vehicle cost information"""
         try:
-            cost_file = Path("csv_data/input/车辆商品池_运费计算表.csv")
+            cost_file = Path("csv_data/input_0822/车辆商品池_运费计算表.csv")
             if cost_file.exists():
                 df = pd.read_csv(cost_file, encoding='utf-8-sig')
                 logger.info("Loaded vehicle cost data")
@@ -473,7 +477,7 @@ class DataManager:
     def _load_service_times(self):
         """Load service time information"""
         try:
-            service_file = Path("csv_data/input/车辆商品池_卸货时间.csv")
+            service_file = Path("csv_data/input_0822/车辆商品池_卸货时间.csv")
             if service_file.exists():
                 df = pd.read_csv(service_file, encoding='utf-8-sig')
                 logger.info("Loaded service time data")
@@ -521,86 +525,60 @@ class DataManager:
             try:
                 df = pd.read_csv(csv_file, encoding='utf-8-sig')
                 logger.info(f"Loading products from {csv_file.name}")
-                df['vol'] = (df['长cm'].fillna(0) *
-                              df['宽cm'].fillna(0) *
-                              df['高cm'].fillna(0))
+                
+                # Calculate volume from dimensions (convert cm to L)
+                df['vol_from_dimensions'] = (df['长cm'].fillna(0) *
+                                            df['宽cm'].fillna(0) *
+                                            df['高cm'].fillna(0)) / 1000  # Convert cm³ to L
 
                 for _, row in df.iterrows():
                     try:
-                        product_id = str(row['商品编码'])
-                        product_name = str(row['商品名称'])
-                        unit = str(row['单位'])
+                        product_id = str(row['商品编码']).strip()
+                        product_name = str(row['商品名称']).strip() if pd.notna(row['商品名称']) else ""
+                        unit = str(row['单位']).strip() if pd.notna(row['单位']) else ""
                         
-                        # Calculate volume per unit
+                        # Get storage condition and category information
+                        storage_condition = str(row['存储条件']).strip() if pd.notna(row['存储条件']) else "常温"
+                        category_major = str(row['管理分类大类']).strip() if pd.notna(row['管理分类大类']) else ""
+                        category_medium = str(row['管理分类中类']).strip() if pd.notna(row['管理分类中类']) else ""
+                        category_minor = str(row['管理分类小类']).strip() if pd.notna(row['管理分类小类']) else ""
+                        
+                        # Calculate volume per unit using the priority logic from the new format
                         volume_per_unit = 0.0
-                        vol1 = row['vol']/1000
-                        vol2 = 0
-                        if unit == "KG":
-                            vol2 = float(row['计算规则（L/kg)']) if pd.notna(row['计算规则（L/kg)']) else 0
-                        vol3 = float(row['规则体积推算L']) if pd.notna(row['规则体积推算L']) else 0
-                        vol4 = float(row['规格体积L']) if pd.notna(row['规格体积L']) else 0
-
+                        
+                        # Priority 1: Use volume corrections if available
                         if product_id in volume_corrections:
                             volume_per_unit = volume_corrections[product_id]
-                        # elif C:
-                        #     volume_per_unit = float(row['规格体积L'])
-                        # elif pd.notna(row['计算规则（L/kg)']):
-                        #     volume_per_unit = float(row['计算规则（L/kg)'])
-                        else:
-                            volume_per_unit = max(vol1, vol2, vol3, vol4)
-
-                        if volume_per_unit == 0: logger.warning(f"Volume for product {product_id} not found")
-                        # Estimate weight per unit (placeholder - could be improved)
-                        if unit == "KG":
-                            weight_per_unit = 1.0
-                        else:
-                            pattern1 = r'(\d+(?:\.\d+)?)(?=\s*(?:kg|千克))'
-                            pattern2 = r'(\d+)(?=\s*(?:g|克))'
-                            pattern3 = r'(\d+)(?=\s*(?:ml))'
-                            pattern4 = r'(\d+(?:\.\d+)?)(?=\s*(?:L))'
-                            match = re.search(pattern1, row['商品名称'], re.IGNORECASE)
-                            if match:
-                                weight_per_unit = float(match.group(1))
-                                match = re.search(r'kg\*([0-9]+)', row['商品名称'], re.IGNORECASE)
-                                if match:
-                                    weight_per_unit = weight_per_unit * int(match.group(1))
-                            else:
-                                match = re.search(pattern2, row['商品名称'], re.IGNORECASE)
-                                if match:
-                                    weight_per_unit = float(match.group(1))/1000
-                                    match = re.search(r'g\*([0-9]+)', row['商品名称'], re.IGNORECASE)
-                                    if match:
-                                        weight_per_unit = weight_per_unit * int(match.group(1))
-                                else:
-                                    match = re.search(pattern3, row['商品名称'], re.IGNORECASE)
-                                    if match:
-                                        weight_per_unit = float(match.group(1)) / 1000
-                                        match = re.search(r'ml\*([0-9]+)', row['商品名称'], re.IGNORECASE)
-                                        if match:
-                                            weight_per_unit = weight_per_unit * int(match.group(1))
-                                    else:
-                                        match = re.search(pattern4, row['商品名称'], re.IGNORECASE)
-                                        if match:
-                                            weight_per_unit = float(match.group(1))
-                                            match = re.search(r'L\*([0-9]+)', row['商品名称'], re.IGNORECASE)
-                                            if match:
-                                                weight_per_unit = weight_per_unit * int(match.group(1))
-                                        else:
-                                            weight_per_unit = 1.0
-                            if weight_per_unit > 100: logger.warning(f"Weights/unit for product {product_id} >= 100")
+                        # Priority 2: Use 规格体积L if available
+                        elif pd.notna(row['规格体积L']) and float(row['规格体积L']) > 0:
+                            volume_per_unit = float(row['规格体积L'])
+                        # Priority 3: Use 规则体积推算L if available
+                        elif pd.notna(row['规则体积推算L']) and float(row['规则体积推算L']) > 0:
+                            volume_per_unit = float(row['规则体积推算L'])
+                        # Priority 4: Use calculation rule for KG units
+                        elif unit == "KG" and pd.notna(row['计算规则（L/kg)']) and float(row['计算规则（L/kg)']) > 0:
+                            volume_per_unit = float(row['计算规则（L/kg)'])
+                        # Priority 5: Use dimensions if available
+                        elif row['vol_from_dimensions'] > 0:
+                            volume_per_unit = row['vol_from_dimensions']
                         
-                        if product_id not in products_dict:
-                            product = Product(
-                                id=product_id,
-                                name=product_name,
-                                weight_per_unit=weight_per_unit,
-                                volume_per_unit=volume_per_unit,
-                                category=unit
-                            )
-                            products_dict[product_id] = product
-                            
+                        # Create product with enhanced information
+                        product = Product(
+                            id=product_id,
+                            name=product_name,
+                            weight_per_unit=1.0,  # Default weight, can be enhanced later
+                            volume_per_unit=volume_per_unit,
+                            category=unit,  # Use unit as category for backward compatibility
+                            storage_condition=storage_condition,
+                            category_major=category_major,
+                            category_medium=category_medium,
+                            category_minor=category_minor
+                        )
+                        
+                        products_dict[product_id] = product
+                        
                     except Exception as e:
-                        logger.warning(f"Error processing product row: {e}")
+                        logger.debug(f"Error processing product row: {e}")
                         continue
                         
             except Exception as e:
