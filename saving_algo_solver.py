@@ -425,6 +425,12 @@ def calculate_customer_load(customer: Customer, product_map):
 
     return {'weight': total_weight, 'volume': total_volume}
 
+def calculate_route_load(product_map):
+    """计算线路的总重量和总体积需求（含装框逻辑）"""
+    total_weight = 0.0
+    total_volume = 0.0
+    #todo: 补充装框计算逻辑
+    return {'weight': total_weight, 'volume': total_volume}
 
 class SavingsAlgorithmSolver(VRPTWSolver):
     """带时间窗的节约算法求解VRPTW问题"""
