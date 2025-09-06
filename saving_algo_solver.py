@@ -430,11 +430,208 @@ def calculate_customer_load(customer: Customer, product_map):
 demand_info: 线路汇总的所有customer的demand信息。key: product_id, value: the corresponding quantity
 product_map: 每种product相关的细节信息。key: product_id, value：the corresponding class of "Product"
 """
+
 def calculate_route_load(demand_info, product_map):
     """计算线路的总重量和总体积需求（含装框逻辑）"""
     total_weight = 0.0
     total_volume = 0.0
-    #todo: 补充装框计算逻辑
+
+    pork = {
+        'normal': {'weg': 0.0, 'vol': 0.0, 'code': set()},
+        'cold': {'weg': 0.0, 'vol': 0.0, 'code': set()},
+        'freeze': {'weg': 0.0, 'vol': 0.0, 'code': set()},
+        'hot': {'weg': 0.0, 'vol': 0.0, 'code': set()}
+    }
+
+    egg = {
+        'normal': {'weg': 0.0, 'vol': 0.0, 'code': set()},
+        'cold': {'weg': 0.0, 'vol': 0.0, 'code': set()}
+    }
+
+    cooked = {
+        'normal': {'weg': 0, 'vol': 0, 'code': set()},
+        'cold': {'weg': 0, 'vol': 0, 'code': set()},
+        'freeze': {'weg': 0, 'vol': 0, 'code': set()}
+    }
+
+    veget = {
+        'normal': {'weg': 0.0, 'vol': 0.0, 'code': set()},
+        'cold': {'weg': 0.0, 'vol': 0.0, 'code': set()},
+    }
+
+    food = {
+        'normal': {'weg': 0.0, 'vol': 0.0, 'code': set()},
+        'cold': {'weg': 0.0, 'vol': 0.0, 'code': set()},
+        'freeze': {'weg': 0.0, 'vol': 0.0, 'code': set()},
+        'hot': {'weg': 0.0, 'vol': 0.0, 'code': set()}
+    }
+
+    for product_id, quantity in demand_info.items():
+        product = product_map[product_id]
+        if product is None: continue
+
+        # 计算单件商品重量和体积
+        if product.category == 'KG':
+            p_weight = quantity
+            p_volume = product.volume_per_unit * quantity
+        else:
+            p_weight = product.weight_per_unit * quantity
+            p_volume = product.volume_per_unit * quantity
+
+        # 条件5: 整件、整板豆腐不需要装框 单位是：板
+        if product_id in ('1226143', '1226147') :
+            total_weight += p_weight
+            total_volume += p_volume
+            continue
+
+        # 条件4: 猪肉单独入筐
+        if product.category_medium == "猪肉":
+            if product.storage_condition in ('常温', '干燥'):
+                pork['normal']['weg'] += p_weight
+                pork['normal']['vol'] += p_volume
+                pork['normal']['code'].add(product_id)
+            elif product.storage_condition == '冷藏':
+                pork['cold']['weg'] += p_weight
+                pork['cold']['vol'] += p_volume
+                pork['cold']['code'].add(product_id)
+            elif product.storage_condition in ('冷冻', '冻', '冷鲜', '冰鲜', '冷鲜', '熟冻', '熟冻', '鲜冻', '活冻',
+                                               '船冻', '速冻'):
+                pork['freeze']['weg'] += p_weight
+                pork['freeze']['vol'] += p_volume
+                pork['freeze']['code'].add(product_id)
+            elif product.storage_condition in ('热鲜', '鲜'):
+                pork['hot']['weg'] += p_weight
+                pork['hot']['vol'] += p_volume
+                pork['hot']['code'].add(product_id)
+            else:
+                logger.error(f"未识别pork储藏条件{product.storage_condition}")
+            continue
+
+        # 条件3: 鲜鸡蛋单独入筐
+        if product.category_minor == "鲜蛋":
+            if product.storage_condition in ('常温', '干燥'):
+                egg['normal']['weg'] += p_weight
+                egg['normal']['vol'] += p_volume
+                egg['normal']['code'].add(product_id)
+            elif product.storage_condition == '冷藏':
+                egg['cold']['weg'] += p_weight
+                egg['cold']['vol'] += p_volume
+                egg['cold']['code'].add(product_id)
+            else:
+                logger.error(f"未识别egg储藏条件{product.storage_condition}")
+            continue
+
+        # 条件2: 熟食单独入筐
+        if product.category_medium == "熟食烘培":
+            if product.storage_condition in ('常温', '干燥'):
+                cooked['normal']['weg'] += p_weight
+                cooked['normal']['vol'] += p_volume
+                cooked['normal']['code'].add(product_id)
+            elif product.storage_condition == '冷藏':
+                cooked['cold']['weg'] += p_weight
+                cooked['cold']['vol'] += p_volume
+                cooked['cold']['code'].add(product_id)
+            elif product.storage_condition in ('冷冻', '冻', '冷鲜', '冰鲜', '冷鲜', '熟冻', '熟冻', '鲜冻', '活冻',
+                                               '船冻', '速冻'):
+                cooked['freeze']['weg'] += p_weight
+                cooked['freeze']['vol'] += p_volume
+                cooked['freeze']['code'].add(product_id)
+            else:
+                logger.error(f"未识别cooked储藏条件{product.storage_condition}")
+            continue
+
+        # 附加条件：原件原箱商品不考虑装框（超过周转箱体积或重量的单件商品）
+        if p_volume > 74.4 or p_weight> 35:
+            total_weight += p_weight
+            total_volume += p_volume
+            continue
+
+        # 蔬菜水果作为生鲜单独考虑
+        if product.category_major == '蔬菜水果':
+            if product.storage_condition in ('常温', '干燥'):
+                veget['normal']['weg'] += p_weight
+                veget['normal']['vol'] += p_volume
+                veget['normal']['code'].add(product_id)
+            elif product.storage_condition == '冷藏':
+                veget['cold']['weg'] += p_weight
+                veget['cold']['vol'] += p_volume
+                veget['cold']['code'].add(product_id)
+            else:
+                logger.error(f"未识别veget储藏条件{product.storage_condition}")
+            continue
+
+        #  条件1 不同温层商品不允许合框温层：常温、冷藏、冷冻、热鲜
+        if product.storage_condition in ('常温', '干燥'):
+            food['normal']['weg'] += p_weight
+            food['normal']['vol'] += p_volume
+            food['normal']['code'].add(product_id)
+        elif product.storage_condition == '冷藏':
+            food['cold']['weg'] += p_weight
+            food['cold']['vol'] += p_volume
+            food['cold']['code'].add(product_id)
+        elif product.storage_condition in ('冷冻', '冻', '冷鲜', '冰鲜', '冷鲜', '熟冻', '熟冻', '鲜冻', '活冻', '船冻', '速冻'):
+            food['freeze']['weg'] += p_weight
+            food['freeze']['vol'] += p_volume
+            food['freeze']['code'].add(product_id)
+        elif product.storage_condition in ('热鲜', '鲜'):
+            food['hot']['weg'] += p_weight
+            food['hot']['vol'] += p_volume
+            food['hot']['code'].add(product_id)
+
+        else:
+            logger.error(f"未识别food储藏条件{product.storage_condition}")
+
+    cold_box = 0
+    normal_box = 0
+    hot_box = 0
+
+    for key, val in pork.items():
+        if val['code']:
+            total_weight += val['weg']
+            if key in {'cold', 'freeze'}:
+                cold_box += math.ceil(max(val['weg']/20, val['vol']/60, len(val['code'])/10))
+            elif key == 'normal':
+                normal_box += math.ceil(max(val['weg']/20, val['vol']/74.4, len(val['code'])/10))
+            else:
+                hot_box += math.ceil(max(val['weg']/20, val['vol']/38.4, len(val['code'])/10))
+
+    for key, val in egg.items():
+        if val['code']:
+            total_weight += val['weg']
+            if key in {'cold', 'freeze'}:
+                cold_box += math.ceil(max(val['weg']/20, val['vol']/60, len(val['code'])/10))
+            else:
+                normal_box += math.ceil(max(val['weg']/20, val['vol']/74.4, len(val['code'])/10))
+
+    for key, val in cooked.items():
+        if val['code']:
+            total_weight += val['weg']
+            if key in {'cold', 'freeze'}:
+                cold_box += math.ceil(max(val['weg']/40, val['vol']/60, len(val['code'])/10))
+            elif key == 'normal':
+                normal_box += math.ceil(max(val['weg']/40, val['vol']/74.4, len(val['code'])/10))
+
+    for key, val in veget.items():
+        if val['code']:
+            total_weight += val['weg']
+            if key in {'cold', 'freeze'}:
+                cold_box += math.ceil(max(val['weg']/20, val['vol']/60, len(val['code'])/10))
+            elif key == 'normal':
+                normal_box += math.ceil(max(val['weg']/20, val['vol']/74.4, len(val['code'])/10))
+
+    for key, val in food.items():
+        if val['code']:
+            total_weight += val['weg']
+            if key in {'cold', 'freeze'}:
+                cold_box += math.ceil(max(val['weg'] / 40, val['vol'] / 60, len(val['code']) / 10))
+            elif key == 'normal':
+                normal_box += math.ceil(max(val['weg'] / 40, val['vol'] / 74.4, len(val['code']) / 10))
+            else:
+                hot_box += math.ceil(max(val['weg'] / 20, val['vol'] / 38.4, len(val['code']) / 10))
+
+    total_weight += cold_box * 8.5 + normal_box * 2
+    total_volume += cold_box * 142.78 + normal_box * 74.4 + hot_box * 38.4
+
     return {'weight': total_weight, 'volume': total_volume}
 
 
