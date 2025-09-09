@@ -118,6 +118,7 @@ class DataManager:
         self.vehicles: List[Vehicle] = []
         self.products: List[Product] = []
         self.locations: List[Location] = []
+        self.product_map: {}
         
     def load_all_data(self) -> bool:
         """Load all CSV data files"""
@@ -128,9 +129,9 @@ class DataManager:
             os.makedirs(self.input_dir, exist_ok=True)
             
             # Load each type of data
+            self._load_products()
             self._load_customers()
             self._load_vehicles()
-            self._load_products()
             self._load_locations()
             
             logger.info(f"Data loaded successfully:")
@@ -352,39 +353,119 @@ class DataManager:
                 # Merge demands from all orders
                 merged_demand = {}
                 all_orders = []
+                if customer.height_restricted:
+                    total_volume = 0
+                    total_weight = 0
+                    k = 1
+                    for customer in customers_list:
+                        add_volume = 0
+                        add_weight = 0
+                        for product_id, quantity in customer.demand.items():
+                            product = self.product_map[product_id]
+                            if product:
+                                if product.category == 'KG':
+                                    add_weight += quantity
+                                    add_volume += product.volume_per_unit * quantity
+                                else:
+                                    add_weight += product.weight_per_unit * quantity
+                                    add_volume += product.volume_per_unit * quantity
+                        if total_volume + add_volume > 4000 or total_weight + add_weight > 1000:
+                            # Create merged customer with combined data
+                            merged_customer = Customer(
+                                id=f"MERGED{k}_{sub_code}",  # Unique ID for merged customer
+                                name=base_customer.name,
+                                address=base_customer.address,
+                                latitude=base_customer.latitude,
+                                longitude=base_customer.longitude,
+                                time_window_start=base_customer.time_window_start,
+                                time_window_end=base_customer.time_window_end,
+                                demand=merged_demand,
+                                sales_order=base_customer.sales_order,  # Keep first order as primary
+                                orders=all_orders,  # All orders for this customer
+                                main_customer_code=base_customer.main_customer_code,
+                                main_customer_name=base_customer.main_customer_name,
+                                sub_customer_code=base_customer.sub_customer_code,
+                                sub_customer_name=base_customer.sub_customer_name,
+                                delivery_method=base_customer.delivery_method,
+                                height_restricted=base_customer.height_restricted,
+                                vehicle_restriction=base_customer.vehicle_restriction,
+                                extra_work_time=base_customer.extra_work_time,
+                                requires_porter=base_customer.requires_porter,
+                                delivery_type=base_customer.delivery_type
+                            )
+                            k+=1
+                            merged_customers.append(merged_customer)
+                            # reset merged info
+                            merged_demand = {}
+                            all_orders = []
+                            total_volume = 0
+                            total_weight = 0
+                        all_orders.append(customer.sales_order)
+                        for product_id, quantity in customer.demand.items():
+                            if product_id not in merged_demand:
+                                merged_demand[product_id] = 0
+                            merged_demand[product_id] += quantity
+                        total_volume += add_volume
+                        total_weight += add_weight
+                    if total_volume > 0 or total_weight > 0:
+                        # Create merged customer with combined data
+                        merged_customer = Customer(
+                            id=f"MERGED_{sub_code}",  # Unique ID for merged customer
+                            name=base_customer.name,
+                            address=base_customer.address,
+                            latitude=base_customer.latitude,
+                            longitude=base_customer.longitude,
+                            time_window_start=base_customer.time_window_start,
+                            time_window_end=base_customer.time_window_end,
+                            demand=merged_demand,
+                            sales_order=base_customer.sales_order,  # Keep first order as primary
+                            orders=all_orders,  # All orders for this customer
+                            main_customer_code=base_customer.main_customer_code,
+                            main_customer_name=base_customer.main_customer_name,
+                            sub_customer_code=base_customer.sub_customer_code,
+                            sub_customer_name=base_customer.sub_customer_name,
+                            delivery_method=base_customer.delivery_method,
+                            height_restricted=base_customer.height_restricted,
+                            vehicle_restriction=base_customer.vehicle_restriction,
+                            extra_work_time=base_customer.extra_work_time,
+                            requires_porter=base_customer.requires_porter,
+                            delivery_type=base_customer.delivery_type
+                        )
+
+                        merged_customers.append(merged_customer)
+                else:
+                    for customer in customers_list:
+                        all_orders.append(customer.sales_order)
+                        for product_id, quantity in customer.demand.items():
+                            if product_id not in merged_demand:
+                                merged_demand[product_id] = 0
+                            merged_demand[product_id] += quantity
+
+                    # Create merged customer with combined data
+                    merged_customer = Customer(
+                        id=f"MERGED_{sub_code}",  # Unique ID for merged customer
+                        name=base_customer.name,
+                        address=base_customer.address,
+                        latitude=base_customer.latitude,
+                        longitude=base_customer.longitude,
+                        time_window_start=base_customer.time_window_start,
+                        time_window_end=base_customer.time_window_end,
+                        demand=merged_demand,
+                        sales_order=base_customer.sales_order,  # Keep first order as primary
+                        orders=all_orders,  # All orders for this customer
+                        main_customer_code=base_customer.main_customer_code,
+                        main_customer_name=base_customer.main_customer_name,
+                        sub_customer_code=base_customer.sub_customer_code,
+                        sub_customer_name=base_customer.sub_customer_name,
+                        delivery_method=base_customer.delivery_method,
+                        height_restricted=base_customer.height_restricted,
+                        vehicle_restriction=base_customer.vehicle_restriction,
+                        extra_work_time=base_customer.extra_work_time,
+                        requires_porter=base_customer.requires_porter,
+                        delivery_type=base_customer.delivery_type
+                    )
                 
-                for customer in customers_list:
-                    all_orders.append(customer.sales_order)
-                    for product_id, quantity in customer.demand.items():
-                        if product_id not in merged_demand:
-                            merged_demand[product_id] = 0
-                        merged_demand[product_id] += quantity
-                
-                # Create merged customer with combined data
-                merged_customer = Customer(
-                    id=f"MERGED_{sub_code}",  # Unique ID for merged customer
-                    name=base_customer.name,
-                    address=base_customer.address,
-                    latitude=base_customer.latitude,
-                    longitude=base_customer.longitude,
-                    time_window_start=base_customer.time_window_start,
-                    time_window_end=base_customer.time_window_end,
-                    demand=merged_demand,
-                    sales_order=base_customer.sales_order,  # Keep first order as primary
-                    orders=all_orders,  # All orders for this customer
-                    main_customer_code=base_customer.main_customer_code,
-                    main_customer_name=base_customer.main_customer_name,
-                    sub_customer_code=base_customer.sub_customer_code,
-                    sub_customer_name=base_customer.sub_customer_name,
-                    delivery_method=base_customer.delivery_method,
-                    height_restricted=base_customer.height_restricted,
-                    vehicle_restriction=base_customer.vehicle_restriction,
-                    extra_work_time=base_customer.extra_work_time,
-                    requires_porter=base_customer.requires_porter,
-                    delivery_type=base_customer.delivery_type
-                )
-                
-                merged_customers.append(merged_customer)
+                    merged_customers.append(merged_customer)
         
         # Replace customer list with merged customers
         self.customers = merged_customers
@@ -585,6 +666,7 @@ class DataManager:
                 logger.warning(f"Could not load products from {csv_file}: {e}")
         
         self.products = list(products_dict.values())
+        self.product_map = products_dict
     
     def _load_locations(self):
         """Load location data from CSV"""
